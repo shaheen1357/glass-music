@@ -15,6 +15,11 @@ struct MiniPlayerView: View {
                     Text(track.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer(minLength: 4)
+                Button { player.previous() } label: {
+                    Image(systemName: "backward.fill")
+                        .font(.title3).frame(width: 34, height: 40).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
                 Button { player.togglePlayPause() } label: {
                     Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                         .font(.title3).frame(width: 40, height: 40).contentShape(Rectangle())
@@ -28,8 +33,7 @@ struct MiniPlayerView: View {
             }
             .foregroundStyle(.primary)
             .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .padding(.vertical, 4)
             .overlay(alignment: .bottom) {
                 GeometryReader { geo in
                     let frac = player.duration > 0 ? min(1, max(0, player.currentTime / player.duration)) : 0
@@ -58,25 +62,24 @@ struct NowPlayingView: View {
     @State private var showLyrics = false
 
     var body: some View {
-        ZStack {
-            background
-            VStack(spacing: 0) {
-                topBar
-                Spacer(minLength: 8)
-                artwork
-                Spacer(minLength: 8)
-                VStack(spacing: 16) {
-                    trackInfo
-                    progress
-                    controls
-                    bottomBar
-                    utilityRow
-                }
+        VStack(spacing: 0) {
+            topBar
+            Spacer(minLength: 8)
+            artwork
+            Spacer(minLength: 8)
+            VStack(spacing: 16) {
+                trackInfo
+                progress
+                controls
+                bottomBar
+                utilityRow
             }
-            .padding(.horizontal, 28)
-            .padding(.top, 8)
-            .padding(.bottom, 20)
         }
+        .padding(.horizontal, 28)
+        .padding(.top, 8)
+        .padding(.bottom, 20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(background)
         .preferredColorScheme(.dark)
         .onAppear { scrub = player.currentTime }
         .onChange(of: player.currentTime) { _, newValue in

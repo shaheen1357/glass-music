@@ -365,7 +365,6 @@ struct PlaylistDetailView: View {
                 .font(.caption).foregroundStyle(.secondary)
 
             HStack(spacing: 20) {
-                pillRow
                 Spacer()
                 Button {
                     guard !displayedTracks.isEmpty else { return }
@@ -386,6 +385,7 @@ struct PlaylistDetailView: View {
                 }
                 .disabled(displayedTracks.isEmpty)
             }
+            pillRow
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 8)
@@ -412,9 +412,12 @@ struct PlaylistDetailView: View {
 
     private func pillLabel(_ title: String, _ icon: String) -> some View {
         Label(title, systemImage: icon)
+            .labelStyle(.titleAndIcon)
             .font(.subheadline.weight(.medium))
-            .padding(.horizontal, 14).padding(.vertical, 8)
+            .lineLimit(1)
+            .padding(.horizontal, 14).padding(.vertical, 7)
             .background(.ultraThinMaterial, in: Capsule())
+            .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5))
             .foregroundStyle(.primary)
     }
 }

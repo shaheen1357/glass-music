@@ -31,7 +31,7 @@ struct RootView: View {
             tabs.safeAreaInset(edge: .bottom) {
                 if player.currentTrack != nil {
                     MiniPlayerView(showNowPlaying: $showNowPlaying)
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                         .padding(.horizontal, 10)
                         .padding(.bottom, 2)
                 }
