@@ -178,6 +178,14 @@ final class PlaylistStore: ObservableObject {
         }
     }
 
+    func addTrackIDs(_ ids: [String], to playlistID: String) {
+        guard let index = playlists.firstIndex(where: { $0.id == playlistID }) else { return }
+        for id in ids where !playlists[index].trackIDs.contains(id) {
+            playlists[index].trackIDs.append(id)
+        }
+        save()
+    }
+
     func removeTracks(at offsets: IndexSet, from playlistID: String) {
         guard let index = playlists.firstIndex(where: { $0.id == playlistID }) else { return }
         playlists[index].trackIDs.remove(atOffsets: offsets)

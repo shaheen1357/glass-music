@@ -194,8 +194,10 @@ final class LibraryStore: ObservableObject {
     }
 
     // MARK: - Import
-    func importFiles(_ urls: [URL]) {
+    @discardableResult
+    func importFiles(_ urls: [URL]) -> [String] {
         let fm = FileManager.default
+        var importedIDs: [String] = []
         for source in urls {
             let scoped = source.startAccessingSecurityScopedResource()
             defer { if scoped { source.stopAccessingSecurityScopedResource() } }
@@ -206,11 +208,13 @@ final class LibraryStore: ObservableObject {
                     try? fm.removeItem(at: destination)
                 }
                 try fm.copyItem(at: source, to: destination)
+                importedIDs.append(destination.path)
             } catch {
                 print("Import failed for \(source.lastPathComponent): \(error)")
             }
         }
         Task { await scan() }
+        return importedIDs
     }
 
     func delete(_ track: Track) {

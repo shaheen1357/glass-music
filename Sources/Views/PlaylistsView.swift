@@ -205,6 +205,7 @@ struct PlaylistDetailView: View {
     @State private var editMode: EditMode = .inactive
     @State private var showExported = false
     @State private var exportedURL: URL?
+    @State private var showImportSongs = false
 
     private var playlist: Playlist? { playlists.playlists.first { $0.id == playlistID } }
     private var storedTracks: [Track] { playlist.map { playlists.tracks(for: $0, in: library) } ?? [] }
@@ -310,6 +311,7 @@ struct PlaylistDetailView: View {
                         }
                     } label: { Label("Export as M3U", systemImage: "square.and.arrow.up") }
                     Button { showAddSongs = true } label: { Label("Add Songs", systemImage: "plus") }
+                    Button { showImportSongs = true } label: { Label("Import Songs", systemImage: "square.and.arrow.down") }
                     Picker("Sort By", selection: $sortMode) {
                         ForEach(PlaylistSort.allCases) { Text($0.rawValue).tag($0) }
                     }
@@ -330,6 +332,14 @@ struct PlaylistDetailView: View {
         .sheet(isPresented: $showEditDetails) {
             EditPlaylistDetailsView(playlistID: playlistID).environmentObject(playlists)
         }
+        .fileImporter(isPresented: $showImportSongs,
+                      allowedContentTypes: [.audio, .mp3, .mpeg4Audio, .wav, .aiff],
+                      allowsMultipleSelection: true) { result in
+            if case .success(let urls) = result {
+                let ids = library.importFiles(urls)
+                playlists.addTrackIDs(ids, to: playlistID)
+            }
+        }
         .alert("Exported", isPresented: $showExported) {
             Button("OK", role: .cancel) { }
         } message: {
@@ -340,22 +350,44 @@ struct PlaylistDetailView: View {
     private var totalDuration: Double { storedTracks.reduce(0) { $0 + $1.duration } }
 
     private var header: some View {
-        VStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             PlaylistCover(tracks: storedTracks, kind: playlist?.kind ?? .user, corner: 12,
                           coverData: playlist?.coverImageData)
-                .frame(width: 200, height: 200)
+                .frame(width: 210, height: 210)
                 .shadow(color: .black.opacity(0.2), radius: 12, y: 6)
-            Text(playlist?.name ?? "").font(.title2.bold()).multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+
+            Text(playlist?.name ?? "").font(.title.bold())
             if let details = playlist?.details, !details.isEmpty {
                 Text(details).font(.subheadline).foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
             }
             Text("\(songCountString(storedTracks.count)) · \(totalTimeString(totalDuration))")
                 .font(.caption).foregroundStyle(.secondary)
-            PlayShuffleButtons(tracks: displayedTracks).padding(.top, 4)
-            pillRow
+
+            HStack(spacing: 20) {
+                pillRow
+                Spacer()
+                Button {
+                    guard !displayedTracks.isEmpty else { return }
+                    if !player.isShuffled { player.toggleShuffle() }
+                    player.play(tracks: displayedTracks, startAt: Int.random(in: 0..<displayedTracks.count))
+                } label: {
+                    Image(systemName: "shuffle").font(.title2)
+                        .foregroundStyle(displayedTracks.isEmpty ? Color.secondary : Color.accentColor)
+                }
+                .disabled(displayedTracks.isEmpty)
+                Button {
+                    if player.isShuffled { player.toggleShuffle() }
+                    player.play(tracks: displayedTracks, startAt: 0)
+                } label: {
+                    Image(systemName: "play.fill").font(.title2).foregroundStyle(.white)
+                        .frame(width: 56, height: 56)
+                        .background(Color.accentColor.opacity(displayedTracks.isEmpty ? 0.4 : 1.0), in: Circle())
+                }
+                .disabled(displayedTracks.isEmpty)
+            }
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 8)
     }
 

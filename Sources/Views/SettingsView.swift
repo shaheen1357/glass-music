@@ -1,10 +1,12 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @EnvironmentObject var player: PlayerEngine
     @EnvironmentObject var library: LibraryStore
     @Environment(\.dismiss) private var dismiss
     private let sleepChoices = [5, 10, 15, 30, 45, 60]
+    @State private var showImport = false
 
     var body: some View {
         NavigationStack {
@@ -46,6 +48,9 @@ struct SettingsView: View {
                         Spacer()
                         Text("\(library.tracks.count)").foregroundStyle(.secondary)
                     }
+                    Button { showImport = true } label: {
+                        Label("Import Songs", systemImage: "square.and.arrow.down")
+                    }
                     Button { Task { await library.scan() } } label: {
                         Label("Rescan Library", systemImage: "arrow.clockwise")
                     }
@@ -60,6 +65,11 @@ struct SettingsView: View {
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+            .fileImporter(isPresented: $showImport,
+                          allowedContentTypes: [.audio, .mp3, .mpeg4Audio, .wav, .aiff],
+                          allowsMultipleSelection: true) { result in
+                if case .success(let urls) = result { library.importFiles(urls) }
+            }
         }
     }
 

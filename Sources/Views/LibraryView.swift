@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - Library ("Your Library" — Spotify layout, Apple aesthetics)
 enum LibraryFilter: String, CaseIterable, Identifiable {
@@ -39,11 +40,6 @@ struct LibraryView: View {
                 if filter == .albums || filter == .songs {
                     ToolbarItem(placement: .topBarTrailing) { SortMenu(selection: $sort) }
                 }
-                if filter == .playlists {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button { showNewPlaylist = true } label: { Image(systemName: "plus") }
-                    }
-                }
                 if filter == .playlists || filter == .albums {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button { withAnimation { isGrid.toggle() } } label: {
@@ -51,7 +47,9 @@ struct LibraryView: View {
                         }
                     }
                 }
-                ToolbarItem(placement: .topBarTrailing) { ImportButton() }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { showNewPlaylist = true } label: { Image(systemName: "plus") }
+                }
             }
             .sheet(isPresented: $showSettings) {
                 SettingsView().environmentObject(player).environmentObject(library)
@@ -278,7 +276,7 @@ struct EmptyLibraryHint: View {
         VStack(spacing: 10) {
             Image(systemName: "square.and.arrow.down").font(.system(size: 40)).foregroundStyle(.secondary)
             Text("No music yet").font(.headline)
-            Text("Add songs with the + button, or drop files into the Music folder in the Files app, then pull to refresh.")
+            Text("Import songs from Settings (gear icon), or drop files into the Music folder in the Files app, then pull to refresh.")
                 .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity).padding(.vertical, 40)
