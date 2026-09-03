@@ -1,0 +1,9 @@
+# XcodeGen output (generated in CI)
+Music.xcodeproj/
+# Build output
+build/
+DerivedData/
+Payload/
+*.ipa
+# macOS
+.DS_Store
