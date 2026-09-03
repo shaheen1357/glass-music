@@ -154,7 +154,8 @@ final class PlaylistStore: ObservableObject {
             .map { ($0 as NSString).lastPathComponent }
         let byName = Dictionary(library.tracks.map { ($0.url.lastPathComponent, $0.id) },
                                 uniquingKeysWith: { a, _ in a })
-        let ids = names.compactMap { byName[$0] }
+        var seen = Set<String>()
+        let ids = names.compactMap { byName[$0] }.filter { seen.insert($0).inserted }
         guard !ids.isEmpty else { return }
         let base = url.deletingPathExtension().lastPathComponent
         playlists.append(Playlist(id: UUID().uuidString,

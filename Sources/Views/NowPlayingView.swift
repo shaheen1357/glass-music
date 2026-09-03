@@ -27,13 +27,8 @@ struct MiniPlayerView: View {
                 .buttonStyle(.plain)
             }
             .foregroundStyle(.primary)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
-            )
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
             .overlay(alignment: .bottom) {
                 GeometryReader { geo in
                     let frac = player.duration > 0 ? min(1, max(0, player.currentTime / player.duration)) : 0
@@ -41,12 +36,8 @@ struct MiniPlayerView: View {
                         .frame(width: geo.size.width * frac, height: 2)
                         .frame(maxHeight: .infinity, alignment: .bottom)
                 }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 3)
                 .allowsHitTesting(false)
             }
-            .shadow(color: .black.opacity(0.15), radius: 8, y: 2)
-            .padding(.horizontal, 10)
             .contentShape(Rectangle())
             .onTapGesture { showNowPlaying = true }
         }
@@ -68,18 +59,22 @@ struct NowPlayingView: View {
     var body: some View {
         ZStack {
             background
-            VStack(spacing: 20) {
+            VStack(spacing: 0) {
                 topBar
-                Spacer(minLength: 0)
+                Spacer(minLength: 8)
                 artwork
-                trackInfo
-                progress
-                controls
-                bottomBar
-                utilityRow
+                Spacer(minLength: 8)
+                VStack(spacing: 16) {
+                    trackInfo
+                    progress
+                    controls
+                    bottomBar
+                    utilityRow
+                }
             }
             .padding(.horizontal, 28)
-            .padding(.bottom, 24)
+            .padding(.top, 8)
+            .padding(.bottom, 20)
         }
         .preferredColorScheme(.dark)
         .onAppear { scrub = player.currentTime }
@@ -166,8 +161,8 @@ struct NowPlayingView: View {
 
     private var artwork: some View {
         ArtworkView(data: player.currentTrack?.artworkData, corner: 16)
-            .frame(maxWidth: .infinity)
             .aspectRatio(1, contentMode: .fit)
+            .frame(maxWidth: 300, maxHeight: 300)
             .scaleEffect(player.isPlaying ? 1.0 : 0.86)
             .shadow(color: .black.opacity(0.4), radius: 24, y: 12)
             .animation(.spring(response: 0.4, dampingFraction: 0.7), value: player.isPlaying)
@@ -311,7 +306,9 @@ struct QueueView: View {
                         .listRowSeparator(.hidden)
                 } else {
                     Section {
-                        ForEach(player.upNext) { track in TrackRow(track: track) }
+                        ForEach(player.upNext) { track in
+                            TrackRow(track: track, onPlay: { player.jump(to: track) })
+                        }
                             .onDelete { player.removeFromUpNext(at: $0) }
                             .onMove { player.moveUpNext(from: $0, to: $1) }
                     } header: {

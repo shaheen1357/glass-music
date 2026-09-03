@@ -298,9 +298,6 @@ struct PlaylistDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $query, prompt: "Find in Playlist")
         .toolbar {
-            if canReorder && !storedTracks.isEmpty {
-                ToolbarItem(placement: .topBarTrailing) { EditButton() }
-            }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     if playlist?.kind == .user {
@@ -385,7 +382,7 @@ struct PlaylistDetailView: View {
         Label(title, systemImage: icon)
             .font(.subheadline.weight(.medium))
             .padding(.horizontal, 14).padding(.vertical, 8)
-            .background(Color(.systemGray5), in: Capsule())
+            .background(.ultraThinMaterial, in: Capsule())
             .foregroundStyle(.primary)
     }
 }

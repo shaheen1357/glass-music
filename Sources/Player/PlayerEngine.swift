@@ -240,6 +240,12 @@ final class PlayerEngine: ObservableObject {
         queue = Array(queue[0...currentIndex])
     }
 
+    func jump(to track: Track) {
+        guard let idx = queue.firstIndex(of: track) else { return }
+        currentIndex = idx
+        startCurrent()
+    }
+
     // MARK: - Sleep timer
     func startSleepTimer(minutes: Int) {
         cancelSleepTimer()

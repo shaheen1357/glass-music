@@ -6,25 +6,36 @@ struct RootView: View {
     @State private var showNowPlaying = false
 
     var body: some View {
-        TabView {
-            HomeView()
-                .tabItem { Label("Home", systemImage: "house.fill") }
-            LibraryView()
-                .tabItem { Label("Library", systemImage: "square.stack.fill") }
-            SearchView()
-                .tabItem { Label("Search", systemImage: "magnifyingglass") }
-        }
-        .tint(Color.accentColor)
-        .safeAreaInset(edge: .bottom) {
-            if player.currentTrack != nil {
-                MiniPlayerView(showNowPlaying: $showNowPlaying)
-                    .padding(.bottom, 2)
+        content
+            .tint(Color.accentColor)
+            .fullScreenCover(isPresented: $showNowPlaying) {
+                NowPlayingView(isPresented: $showNowPlaying)
+                    .environmentObject(player)
+                    .environmentObject(playlists)
             }
+    }
+
+    @ViewBuilder private var content: some View {
+        let tabs = TabView {
+            HomeView().tabItem { Label("Home", systemImage: "house.fill") }
+            LibraryView().tabItem { Label("Library", systemImage: "square.stack.fill") }
+            SearchView().tabItem { Label("Search", systemImage: "magnifyingglass") }
         }
-        .fullScreenCover(isPresented: $showNowPlaying) {
-            NowPlayingView(isPresented: $showNowPlaying)
-                .environmentObject(player)
-                .environmentObject(playlists)
+        if #available(iOS 26.0, *) {
+            tabs.tabViewBottomAccessory {
+                if player.currentTrack != nil {
+                    MiniPlayerView(showNowPlaying: $showNowPlaying)
+                }
+            }
+        } else {
+            tabs.safeAreaInset(edge: .bottom) {
+                if player.currentTrack != nil {
+                    MiniPlayerView(showNowPlaying: $showNowPlaying)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .padding(.horizontal, 10)
+                        .padding(.bottom, 2)
+                }
+            }
         }
     }
 }
