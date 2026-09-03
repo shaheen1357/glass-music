@@ -16,25 +16,21 @@ struct RootView: View {
     }
 
     @ViewBuilder private var content: some View {
-        let tabs = TabView {
+        // One universal path: safeAreaInset keeps the system tab bar visible on
+        // every iOS version (the iOS 26 tabViewBottomAccessory was hiding it).
+        // The mini player sits as a frosted glass bar directly above the tabs.
+        TabView {
             HomeView().tabItem { Label("Home", systemImage: "house.fill") }
             LibraryView().tabItem { Label("Library", systemImage: "square.stack.fill") }
             SearchView().tabItem { Label("Search", systemImage: "magnifyingglass") }
         }
-        if #available(iOS 26.0, *) {
-            tabs.tabViewBottomAccessory {
-                if player.currentTrack != nil {
-                    MiniPlayerView(showNowPlaying: $showNowPlaying)
-                }
-            }
-        } else {
-            tabs.safeAreaInset(edge: .bottom) {
-                if player.currentTrack != nil {
-                    MiniPlayerView(showNowPlaying: $showNowPlaying)
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                        .padding(.horizontal, 10)
-                        .padding(.bottom, 2)
-                }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if player.currentTrack != nil {
+                MiniPlayerView(showNowPlaying: $showNowPlaying)
+                    .background(.ultraThinMaterial)
+                    .overlay(alignment: .top) {
+                        Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 0.5)
+                    }
             }
         }
     }

@@ -302,16 +302,21 @@ struct QueueView: View {
         NavigationStack {
             List {
                 if let current = player.currentTrack {
-                    Section("Now Playing") { TrackRow(track: current) }
+                    Section("Now Playing") {
+                        TrackRow(track: current)
+                            .listRowBackground(Color.clear)
+                    }
                 }
                 if player.upNext.isEmpty {
                     Text("Nothing in the queue")
                         .foregroundStyle(.secondary)
                         .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
                 } else {
                     Section {
                         ForEach(player.upNext) { track in
                             TrackRow(track: track, onPlay: { player.jump(to: track) })
+                                .listRowBackground(Color.clear)
                         }
                             .onDelete { player.removeFromUpNext(at: $0) }
                             .onMove { player.moveUpNext(from: $0, to: $1) }

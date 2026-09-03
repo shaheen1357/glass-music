@@ -364,61 +364,56 @@ struct PlaylistDetailView: View {
             Text("\(songCountString(storedTracks.count)) · \(totalTimeString(totalDuration))")
                 .font(.caption).foregroundStyle(.secondary)
 
-            HStack(spacing: 20) {
-                Spacer()
-                Button {
-                    guard !displayedTracks.isEmpty else { return }
-                    if !player.isShuffled { player.toggleShuffle() }
-                    player.play(tracks: displayedTracks, startAt: Int.random(in: 0..<displayedTracks.count))
-                } label: {
-                    Image(systemName: "shuffle").font(.title2)
-                        .foregroundStyle(displayedTracks.isEmpty ? Color.secondary : Color.accentColor)
-                }
-                .disabled(displayedTracks.isEmpty)
-                Button {
-                    if player.isShuffled { player.toggleShuffle() }
-                    player.play(tracks: displayedTracks, startAt: 0)
-                } label: {
-                    Image(systemName: "play.fill").font(.title2).foregroundStyle(.white)
-                        .frame(width: 56, height: 56)
-                        .background(Color.accentColor.opacity(displayedTracks.isEmpty ? 0.4 : 1.0), in: Circle())
-                }
-                .disabled(displayedTracks.isEmpty)
-            }
-            pillRow
+            controlRow
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 8)
     }
 
-    private var pillRow: some View {
-        HStack(spacing: 10) {
-            pill("Add", "plus") { showAddSongs = true }
+    // Single Spotify-style control row: secondary actions on the left,
+    // shuffle + big play on the right. Icon-only so it fits the 12 mini.
+    private var controlRow: some View {
+        HStack(spacing: 22) {
+            iconButton("plus") { showAddSongs = true }
             if playlist?.kind == .user {
-                pill("Edit", "pencil") { showEditDetails = true }
+                iconButton("pencil") { showEditDetails = true }
             }
             Menu {
                 Picker("Sort By", selection: $sortMode) {
                     ForEach(PlaylistSort.allCases) { Text($0.rawValue).tag($0) }
                 }
-            } label: { pillLabel("Sort", "arrow.up.arrow.down") }
+            } label: {
+                Image(systemName: "arrow.up.arrow.down")
+                    .font(.title3).foregroundStyle(.primary)
+            }
+            Spacer(minLength: 8)
+            Button {
+                guard !displayedTracks.isEmpty else { return }
+                if !player.isShuffled { player.toggleShuffle() }
+                player.play(tracks: displayedTracks, startAt: Int.random(in: 0..<displayedTracks.count))
+            } label: {
+                Image(systemName: "shuffle").font(.title2)
+                    .foregroundStyle(displayedTracks.isEmpty ? Color.secondary : Color.accentColor)
+            }
+            .disabled(displayedTracks.isEmpty)
+            Button {
+                if player.isShuffled { player.toggleShuffle() }
+                player.play(tracks: displayedTracks, startAt: 0)
+            } label: {
+                Image(systemName: "play.fill").font(.title2).foregroundStyle(.white)
+                    .frame(width: 52, height: 52)
+                    .background(Color.accentColor.opacity(displayedTracks.isEmpty ? 0.4 : 1.0), in: Circle())
+            }
+            .disabled(displayedTracks.isEmpty)
         }
-        .padding(.top, 2)
+        .padding(.top, 4)
     }
 
-    private func pill(_ title: String, _ icon: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) { pillLabel(title, icon) }.buttonStyle(.plain)
-    }
-
-    private func pillLabel(_ title: String, _ icon: String) -> some View {
-        Label(title, systemImage: icon)
-            .labelStyle(.titleAndIcon)
-            .font(.subheadline.weight(.medium))
-            .lineLimit(1)
-            .padding(.horizontal, 14).padding(.vertical, 7)
-            .background(.ultraThinMaterial, in: Capsule())
-            .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5))
-            .foregroundStyle(.primary)
+    private func iconButton(_ icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon).font(.title3).foregroundStyle(.primary)
+        }
+        .buttonStyle(.plain)
     }
 }
 
