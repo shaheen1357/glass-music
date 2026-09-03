@@ -16,21 +16,37 @@ struct RootView: View {
     }
 
     @ViewBuilder private var content: some View {
-        // One universal path: safeAreaInset keeps the system tab bar visible on
-        // every iOS version (the iOS 26 tabViewBottomAccessory was hiding it).
-        // The mini player sits as a frosted glass bar directly above the tabs.
-        TabView {
-            HomeView().tabItem { Label("Home", systemImage: "house.fill") }
-            LibraryView().tabItem { Label("Library", systemImage: "square.stack.fill") }
-            SearchView().tabItem { Label("Search", systemImage: "magnifyingglass") }
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if player.currentTrack != nil {
-                MiniPlayerView(showNowPlaying: $showNowPlaying)
-                    .background(.ultraThinMaterial)
-                    .overlay(alignment: .top) {
-                        Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 0.5)
-                    }
+        if #available(iOS 26.0, *) {
+            // iOS 26: the value-based Tab API renders the floating Liquid Glass
+            // tab bar, and tabViewBottomAccessory docks the mini player above it
+            // (the exact pattern Apple Music uses). The previous build broke the
+            // tab bar because it paired tabViewBottomAccessory with the legacy
+            // .tabItem API — that mismatch hides the bar. The Tab API fixes it,
+            // and the system supplies Liquid Glass to the accessory for free.
+            TabView {
+                Tab("Home", systemImage: "house.fill") { HomeView() }
+                Tab("Library", systemImage: "square.stack.fill") { LibraryView() }
+                Tab("Search", systemImage: "magnifyingglass") { SearchView() }
+            }
+            .tabViewBottomAccessory {
+                if player.currentTrack != nil {
+                    MiniPlayerView(showNowPlaying: $showNowPlaying)
+                }
+            }
+        } else {
+            TabView {
+                Tab("Home", systemImage: "house.fill") { HomeView() }
+                Tab("Library", systemImage: "square.stack.fill") { LibraryView() }
+                Tab("Search", systemImage: "magnifyingglass") { SearchView() }
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if player.currentTrack != nil {
+                    MiniPlayerView(showNowPlaying: $showNowPlaying)
+                        .background(.ultraThinMaterial)
+                        .overlay(alignment: .top) {
+                            Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 0.5)
+                        }
+                }
             }
         }
     }
