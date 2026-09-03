@@ -44,12 +44,53 @@ final class PlayerEngine: ObservableObject {
 
     // MARK: - Session
     private func configureSession() {
+        let session = AVAudioSession.sharedInstance()
         do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
-            try AVAudioSession.sharedInstance().setActive(true)
+            try session.setCategory(.playback, mode: .default)
+            try session.setActive(true)
         } catch {
             print("Audio session error: \(error)")
         }
+        // Pause for phone calls / Siri / alarms, and resume when the system allows.
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: session,
+            queue: .main
+        ) { [weak self] note in
+            Task { @MainActor in self?.handleInterruption(note) }
+        }
+        // Pause when headphones / Bluetooth are unplugged (matches iOS behavior).
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: session,
+            queue: .main
+        ) { [weak self] note in
+            Task { @MainActor in self?.handleRouteChange(note) }
+        }
+    }
+
+    private func handleInterruption(_ note: Notification) {
+        guard let info = note.userInfo,
+              let raw = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+        switch type {
+        case .began:
+            pause()
+        case .ended:
+            if let optRaw = info[AVAudioSessionInterruptionOptionKey] as? UInt,
+               AVAudioSession.InterruptionOptions(rawValue: optRaw).contains(.shouldResume) {
+                resume()
+            }
+        @unknown default:
+            break
+        }
+    }
+
+    private func handleRouteChange(_ note: Notification) {
+        guard let info = note.userInfo,
+              let raw = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
+        if reason == .oldDeviceUnavailable { pause() }
     }
 
     // MARK: - Playback control
