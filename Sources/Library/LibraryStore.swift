@@ -31,6 +31,9 @@ final class LibraryStore: ObservableObject {
             }
         }
         result.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        #if targetEnvironment(simulator)
+        if result.isEmpty { result = Self.demoTracks() }
+        #endif
         tracks = result
         rebuildCollections()
     }
@@ -121,6 +124,46 @@ final class LibraryStore: ObservableObject {
         }
         return scaled.jpegData(compressionQuality: 0.85)
     }
+
+    #if targetEnvironment(simulator)
+    /// Demo library so the app is populated when run in the iOS Simulator (e.g. Appetize).
+    static func demoTracks() -> [Track] {
+        guard let url = Bundle.main.url(forResource: "sample", withExtension: "wav") else { return [] }
+        let seed: [(String, String, String)] = [
+            ("Midnight Drive", "The Violets", "Neon Nights"),
+            ("Afterglow", "The Violets", "Neon Nights"),
+            ("Coastline", "Marlowe", "Saltwater"),
+            ("Undertow", "Marlowe", "Saltwater"),
+            ("Paper Planes", "Kite", "Field Notes"),
+            ("Ferris Wheel", "Kite", "Field Notes"),
+        ]
+        return seed.enumerated().map { index, meta in
+            Track(id: "demo-\(index)", url: url, title: meta.0, artist: meta.1, album: meta.2,
+                  trackNumber: index, duration: 4,
+                  artworkData: demoArtwork(hue: Double(index) / Double(seed.count)),
+                  dateAdded: Date().addingTimeInterval(Double(-index) * 3600))
+        }
+    }
+
+    static func demoArtwork(hue: Double) -> Data? {
+        let size = CGSize(width: 320, height: 320)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        let image = renderer.image { ctx in
+            let c1 = UIColor(hue: CGFloat(hue.truncatingRemainder(dividingBy: 1.0)),
+                             saturation: 0.55, brightness: 0.95, alpha: 1)
+            let c2 = UIColor(hue: CGFloat((hue + 0.12).truncatingRemainder(dividingBy: 1.0)),
+                             saturation: 0.70, brightness: 0.60, alpha: 1)
+            let colors = [c1.cgColor, c2.cgColor] as CFArray
+            let space = CGColorSpaceCreateDeviceRGB()
+            if let gradient = CGGradient(colorsSpace: space, colors: colors, locations: [0, 1]) {
+                ctx.cgContext.drawLinearGradient(
+                    gradient, start: .zero,
+                    end: CGPoint(x: size.width, y: size.height), options: [])
+            }
+        }
+        return image.jpegData(compressionQuality: 0.85)
+    }
+    #endif
 
     // MARK: - Collections
     private func rebuildCollections() {
