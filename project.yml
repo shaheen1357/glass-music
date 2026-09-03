@@ -1,6 +1,6 @@
 name: Music
 options:
-  bundleIdPrefix: com.rafeeq
+  bundleIdPrefix: com.local
   createIntermediateGroups: true
   deploymentTarget:
     iOS: "18.0"
@@ -20,7 +20,7 @@ targets:
       - path: Resources
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.rafeeq.music
+        PRODUCT_BUNDLE_IDENTIFIER: com.local.music
         PRODUCT_NAME: Music
         INFOPLIST_FILE: Support/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -41,7 +41,7 @@ targets:
       - target: Music
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.rafeeq.musicTests
+        PRODUCT_BUNDLE_IDENTIFIER: com.local.musicTests
         GENERATE_INFOPLIST_FILE: YES
         CODE_SIGNING_ALLOWED: NO
 schemes:

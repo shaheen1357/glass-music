@@ -587,8 +587,7 @@ struct EditPlaylistDetailsView: View {
             .onChange(of: pickerItem) { _, item in
                 guard let item else { return }
                 Task { @MainActor in
-                    guard let data = try? await item.loadTransferable(type: Data.self),
-                          let data else { return }
+                    guard let data = try? await item.loadTransferable(type: Data.self) else { return }
                     coverData = LibraryStore.thumbnail(from: data, maxDimension: 800) ?? data
                 }
             }
