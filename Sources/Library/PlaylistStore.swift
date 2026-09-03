@@ -19,6 +19,19 @@ final class PlaylistStore: ObservableObject {
         }
         load()
         ensureSystemPlaylists()
+        seedDemoIfNeeded()
+    }
+
+    private func seedDemoIfNeeded() {
+        #if targetEnvironment(simulator)
+        guard !playlists.contains(where: { $0.id == "demo-mix" }) else { return }
+        playlists.append(Playlist(id: "demo-mix", name: "Chill Mix", kind: .user,
+                                  trackIDs: ["demo-0", "demo-2", "demo-4", "demo-1"]))
+        if let i = playlists.firstIndex(where: { $0.kind == .liked }) {
+            playlists[i].trackIDs = ["demo-3", "demo-5"]
+        }
+        save()
+        #endif
     }
 
     // MARK: - Persistence
@@ -59,7 +72,7 @@ final class PlaylistStore: ObservableObject {
         if playlists[index].isPinned {
             playlists[index].isPinned = false
         } else {
-            guard playlists.filter({ $0.isPinned }).count < 4 else { return }
+            guard playlists.filter({ $0.isPinned }).count < 20 else { return }
             playlists[index].isPinned = true
         }
         save()
@@ -97,6 +110,56 @@ final class PlaylistStore: ObservableObject {
     func rename(_ playlist: Playlist, to name: String) {
         guard let index = playlists.firstIndex(where: { $0.id == playlist.id }) else { return }
         playlists[index].name = name
+        save()
+    }
+
+    func updateDetails(id: String, name: String, details: String) {
+        guard let index = playlists.firstIndex(where: { $0.id == id }) else { return }
+        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !clean.isEmpty { playlists[index].name = clean }
+        playlists[index].details = details.trimmingCharacters(in: .whitespacesAndNewlines)
+        save()
+    }
+
+    func setCover(_ data: Data?, forID id: String) {
+        guard let index = playlists.firstIndex(where: { $0.id == id }) else { return }
+        playlists[index].coverImageData = data
+        save()
+    }
+
+    // MARK: - M3U import / export
+    @discardableResult
+    func exportM3U(_ playlist: Playlist, tracks: [Track]) -> URL? {
+        var lines = ["#EXTM3U"]
+        for t in tracks {
+            lines.append("#EXTINF:\(Int(t.duration.rounded())),\(t.artist) - \(t.title)")
+            lines.append(t.url.lastPathComponent)
+        }
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let safe = playlist.name.replacingOccurrences(of: "/", with: "-")
+        let url = docs.appendingPathComponent("\(safe).m3u8")
+        do {
+            try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+            return url
+        } catch { return nil }
+    }
+
+    func importM3U(from url: URL, library: LibraryStore) {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return }
+        let names = content.split(whereSeparator: { $0 == "\n" || $0 == "\r" })
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+            .map { ($0 as NSString).lastPathComponent }
+        let byName = Dictionary(library.tracks.map { ($0.url.lastPathComponent, $0.id) },
+                                uniquingKeysWith: { a, _ in a })
+        let ids = names.compactMap { byName[$0] }
+        guard !ids.isEmpty else { return }
+        let base = url.deletingPathExtension().lastPathComponent
+        playlists.append(Playlist(id: UUID().uuidString,
+                                  name: base.isEmpty ? "Imported Playlist" : base,
+                                  kind: .user, trackIDs: ids))
         save()
     }
 

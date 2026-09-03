@@ -5,6 +5,8 @@ struct MusicApp: App {
     @StateObject private var library = LibraryStore()
     @StateObject private var player = PlayerEngine()
     @StateObject private var playlists = PlaylistStore()
+    @StateObject private var stats = PlayStatsStore()
+    @StateObject private var searchHistory = SearchHistoryStore()
 
     var body: some Scene {
         WindowGroup {
@@ -12,8 +14,13 @@ struct MusicApp: App {
                 .environmentObject(library)
                 .environmentObject(player)
                 .environmentObject(playlists)
+                .environmentObject(stats)
+                .environmentObject(searchHistory)
                 .tint(Color.accentColor)
-                .task { await library.scan() }
+                .task {
+                    player.onPlay = { track in stats.recordPlay(track) }
+                    await library.scan()
+                }
         }
     }
 }

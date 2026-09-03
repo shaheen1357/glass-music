@@ -1,0 +1,76 @@
+import SwiftUI
+
+struct SettingsView: View {
+    @EnvironmentObject var player: PlayerEngine
+    @EnvironmentObject var library: LibraryStore
+    @Environment(\.dismiss) private var dismiss
+    private let sleepChoices = [5, 10, 15, 30, 45, 60]
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Playback") {
+                    Menu {
+                        Button("Off") { player.cancelSleepTimer() }
+                        ForEach(sleepChoices, id: \.self) { m in
+                            Button("\(m) minutes") { player.startSleepTimer(minutes: m) }
+                        }
+                        Button("End of Track") { player.sleepAtEndOfTrack() }
+                    } label: {
+                        HStack {
+                            Label("Sleep Timer", systemImage: "moon.zzz").foregroundStyle(.primary)
+                            Spacer()
+                            Text(player.sleepStatusText).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Section("Track Transitions") {
+                    comingSoon("Gapless Playback", "Removes gaps between tracks.")
+                    comingSoon("Crossfade", "Blend the end of one track into the next.")
+                }
+
+                Section {
+                    comingSoon("Equalizer", "Adjust frequencies to shape your sound.")
+                    comingSoon("Mono Audio", "Play the same audio in both channels.")
+                    comingSoon("Volume Normalization", "Even out loudness across tracks.")
+                } header: {
+                    Text("Audio")
+                } footer: {
+                    Text("These need the advanced audio engine (AVAudioEngine) — planned for a future update.")
+                }
+
+                Section("Library") {
+                    HStack {
+                        Label("Songs", systemImage: "music.note")
+                        Spacer()
+                        Text("\(library.tracks.count)").foregroundStyle(.secondary)
+                    }
+                    Button { Task { await library.scan() } } label: {
+                        Label("Rescan Library", systemImage: "arrow.clockwise")
+                    }
+                }
+
+                Section("About") {
+                    HStack { Text("Version"); Spacer(); Text("1.0").foregroundStyle(.secondary) }
+                    Text("Local hi-res player · FLAC, ALAC, AAC, MP3, WAV, AIFF")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+        }
+    }
+
+    private func comingSoon(_ title: String, _ subtitle: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(title).foregroundStyle(.secondary)
+                Spacer()
+                Text("Coming soon").font(.caption).foregroundStyle(.tertiary)
+            }
+            Text(subtitle).font(.caption).foregroundStyle(.tertiary)
+        }
+    }
+}

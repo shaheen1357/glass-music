@@ -3,6 +3,12 @@ import SwiftUI
 // MARK: - Library root (Apple Music layout: menu rows + Recently Added)
 struct LibraryView: View {
     @EnvironmentObject var library: LibraryStore
+    @EnvironmentObject var player: PlayerEngine
+    @EnvironmentObject var stats: PlayStatsStore
+    @State private var showSettings = false
+
+    private var recentlyPlayedTracks: [Track] { stats.recentlyPlayed(from: library.tracks) }
+    private var mostPlayedTracks: [Track] { stats.mostPlayed(from: library.tracks) }
 
     var body: some View {
         NavigationStack {
@@ -19,6 +25,20 @@ struct LibraryView: View {
                     }
                     NavigationLink { SongsView(title: "Songs", tracks: library.tracks) } label: {
                         LibraryMenuRow(icon: "music.note", title: "Songs")
+                    }
+                    NavigationLink { FolderBrowseView(directory: library.documentsURL, title: "Folders") } label: {
+                        LibraryMenuRow(icon: "folder", title: "Folders")
+                    }
+                }
+
+                if !recentlyPlayedTracks.isEmpty {
+                    Section {
+                        NavigationLink { SongsView(title: "Recently Played", tracks: recentlyPlayedTracks) } label: {
+                            LibraryMenuRow(icon: "clock.arrow.circlepath", title: "Recently Played")
+                        }
+                        NavigationLink { SongsView(title: "Most Played", tracks: mostPlayedTracks) } label: {
+                            LibraryMenuRow(icon: "chart.bar.fill", title: "Most Played")
+                        }
                     }
                 }
 
@@ -44,7 +64,15 @@ struct LibraryView: View {
             }
             .listStyle(.insetGrouped)
             .navigationTitle("Library")
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { ImportButton() } }
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { showSettings = true } label: { Image(systemName: "gearshape") }
+                }
+                ToolbarItem(placement: .topBarTrailing) { ImportButton() }
+            }
+            .sheet(isPresented: $showSettings) {
+                SettingsView().environmentObject(player).environmentObject(library)
+            }
             .refreshable { await library.scan() }
             .overlay {
                 if library.isScanning && library.tracks.isEmpty { ProgressView("Scanning…") }
@@ -111,8 +139,7 @@ struct SongsView: View {
     var body: some View {
         List {
             ForEach(Array(displayed.enumerated()), id: \.element.id) { index, track in
-                Button { player.play(tracks: displayed, startAt: index) } label: { TrackRow(track: track) }
-                    .buttonStyle(.plain)
+                TrackRow(track: track, onPlay: { player.play(tracks: displayed, startAt: index) })
             }
         }
         .listStyle(.plain)
@@ -174,6 +201,7 @@ struct AlbumDetailView: View {
     let album: Album
     @EnvironmentObject var player: PlayerEngine
     @EnvironmentObject var playlists: PlaylistStore
+    @State private var addTrack: Track?
 
     var body: some View {
         List {
@@ -194,32 +222,43 @@ struct AlbumDetailView: View {
             }
             Section {
                 ForEach(Array(album.tracks.enumerated()), id: \.element.id) { index, track in
-                    Button { player.play(tracks: album.tracks, startAt: index) } label: {
-                        HStack(spacing: 12) {
-                            Text("\(index + 1)")
-                                .font(.subheadline).foregroundStyle(.secondary)
-                                .frame(width: 24)
-                            Text(track.title)
-                                .foregroundStyle(player.currentTrack?.id == track.id ? Color.accentColor : .primary)
-                                .lineLimit(1)
-                            Spacer()
-                            Text(formatTime(track.duration)).font(.footnote).foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        Button { player.play(tracks: album.tracks, startAt: index) } label: {
+                            HStack(spacing: 12) {
+                                Text("\(index + 1)")
+                                    .font(.subheadline).foregroundStyle(.secondary)
+                                    .frame(width: 24)
+                                Text(track.title)
+                                    .foregroundStyle(player.currentTrack?.id == track.id ? Color.accentColor : .primary)
+                                    .lineLimit(1)
+                                Spacer()
+                                Text(formatTime(track.duration)).font(.footnote).foregroundStyle(.secondary)
+                            }
+                            .contentShape(Rectangle())
                         }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .contextMenu {
-                        Button { playlists.toggleLike(track) } label: {
-                            Label(playlists.isLiked(track) ? "Remove from Liked Songs" : "Love",
-                                  systemImage: playlists.isLiked(track) ? "heart.slash" : "heart")
+                        .buttonStyle(.plain)
+                        Menu {
+                            TrackActions(track: track,
+                                         onPlay: { player.play(tracks: album.tracks, startAt: index) },
+                                         onAddToPlaylist: { addTrack = track })
+                        } label: {
+                            TrackMenuLabel()
                         }
+                        .buttonStyle(.plain)
                     }
                 }
             }
+            Text("\(songCountString(album.tracks.count)) · \(totalTimeString(album.tracks.reduce(0) { $0 + $1.duration }))")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
         }
         .listStyle(.plain)
         .navigationTitle(album.title)
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $addTrack) { AddToPlaylistView(track: $0).environmentObject(playlists) }
     }
 }
 
@@ -237,7 +276,7 @@ struct ArtistsView: View {
     var body: some View {
         List {
             ForEach(displayed) { artist in
-                NavigationLink { SongsView(title: artist.name, tracks: artist.tracks) } label: {
+                NavigationLink { ArtistDetailView(artist: artist) } label: {
                     HStack(spacing: 14) {
                         ZStack {
                             Circle().fill(Color(.systemGray5))

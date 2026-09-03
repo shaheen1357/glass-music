@@ -9,38 +9,44 @@ struct MiniPlayerView: View {
     var body: some View {
         if let track = player.currentTrack {
             HStack(spacing: 12) {
-                ArtworkView(data: track.artworkData, corner: 6)
-                    .frame(width: 40, height: 40)
-                Text(track.title)
-                    .font(.subheadline)
-                    .lineLimit(1)
+                ArtworkView(data: track.artworkData, corner: 6).frame(width: 42, height: 42)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(track.title).font(.subheadline.weight(.medium)).lineLimit(1)
+                    Text(track.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
                 Spacer(minLength: 4)
-                Button {
-                    player.togglePlayPause()
-                } label: {
+                Button { player.togglePlayPause() } label: {
                     Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.title3)
-                        .frame(width: 36, height: 36)
-                        .contentShape(Rectangle())
+                        .font(.title3).frame(width: 40, height: 40).contentShape(Rectangle())
                 }
-                Button {
-                    player.next()
-                } label: {
+                .buttonStyle(.plain)
+                Button { player.next() } label: {
                     Image(systemName: "forward.fill")
-                        .font(.title3)
-                        .frame(width: 36, height: 36)
-                        .contentShape(Rectangle())
+                        .font(.title3).frame(width: 40, height: 40).contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
             }
             .foregroundStyle(.primary)
             .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .padding(.vertical, 6)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.5)
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
             )
-            .padding(.horizontal, 8)
+            .overlay(alignment: .bottom) {
+                GeometryReader { geo in
+                    let frac = player.duration > 0 ? min(1, max(0, player.currentTime / player.duration)) : 0
+                    Capsule().fill(Color.accentColor)
+                        .frame(width: geo.size.width * frac, height: 2)
+                        .frame(maxHeight: .infinity, alignment: .bottom)
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 3)
+                .allowsHitTesting(false)
+            }
+            .shadow(color: .black.opacity(0.15), radius: 8, y: 2)
+            .padding(.horizontal, 10)
             .contentShape(Rectangle())
             .onTapGesture { showNowPlaying = true }
         }
@@ -56,22 +62,26 @@ struct NowPlayingView: View {
     @State private var scrub: Double = 0
     @State private var isScrubbing = false
     @State private var showQueue = false
+    @State private var showAdd = false
+    @State private var showLyrics = false
 
     var body: some View {
         ZStack {
             background
-            VStack(spacing: 22) {
-                grabber
+            VStack(spacing: 20) {
+                topBar
                 Spacer(minLength: 0)
                 artwork
                 trackInfo
                 progress
                 controls
                 bottomBar
+                utilityRow
             }
             .padding(.horizontal, 28)
-            .padding(.bottom, 28)
+            .padding(.bottom, 24)
         }
+        .preferredColorScheme(.dark)
         .onAppear { scrub = player.currentTime }
         .onChange(of: player.currentTime) { _, newValue in
             if !isScrubbing { scrub = newValue }
@@ -83,9 +93,21 @@ struct NowPlayingView: View {
                 .presentationDetents([.medium, .large])
                 .presentationBackground(.ultraThinMaterial)
         }
+        .sheet(isPresented: $showAdd) {
+            if let t = player.currentTrack {
+                AddToPlaylistView(track: t).environmentObject(playlists)
+            }
+        }
+        .sheet(isPresented: $showLyrics) {
+            if let t = player.currentTrack {
+                LyricsView(track: t).environmentObject(player)
+                    .presentationDetents([.large])
+                    .presentationBackground(.ultraThinMaterial)
+            }
+        }
     }
 
-    // MARK: pieces
+    // Dark scrim guarantees the white controls are always legible, whatever the artwork.
     private var background: some View {
         ZStack {
             if let data = player.currentTrack?.artworkData, let ui = UIImage(data: data) {
@@ -93,27 +115,53 @@ struct NowPlayingView: View {
                     .resizable()
                     .aspectRatio(contentMode: .fill)
                     .ignoresSafeArea()
-                    .blur(radius: 60)
-                    .overlay(Color.black.opacity(0.25))
-                    .overlay(.ultraThinMaterial)
-                    .ignoresSafeArea()
+                    .blur(radius: 45)
             } else {
-                LinearGradient(
-                    colors: [Color.purple.opacity(0.55), Color.indigo.opacity(0.4), Color.black],
-                    startPoint: .top, endPoint: .bottom
-                )
-                .ignoresSafeArea()
+                Color.black.ignoresSafeArea()
             }
+            LinearGradient(colors: [.black.opacity(0.45), .black.opacity(0.82)],
+                           startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea()
         }
     }
 
-    private var grabber: some View {
-        Capsule()
-            .fill(.white.opacity(0.5))
-            .frame(width: 38, height: 5)
-            .padding(.top, 8)
-            .contentShape(Rectangle())
-            .onTapGesture { isPresented = false }
+    private var topBar: some View {
+        VStack(spacing: 12) {
+            Capsule().fill(.white.opacity(0.5)).frame(width: 40, height: 5)
+            HStack {
+                circleButton("chevron.down") { isPresented = false }
+                Spacer()
+                Text("Now Playing").font(.subheadline.weight(.semibold)).foregroundStyle(.white.opacity(0.9))
+                Spacer()
+                Menu {
+                    if let t = player.currentTrack {
+                        Button { showAdd = true } label: { Label("Add to a Playlist…", systemImage: "text.badge.plus") }
+                        Button { player.playNext(t) } label: { Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward") }
+                        Button { player.addToQueue(t) } label: { Label("Play Last", systemImage: "text.line.last.and.arrowtriangle.forward") }
+                        Button { playlists.toggleLike(t) } label: {
+                            Label(playlists.isLiked(t) ? "Remove from Liked Songs" : "Love",
+                                  systemImage: playlists.isLiked(t) ? "heart.slash" : "heart")
+                        }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis").font(.headline).foregroundStyle(.white)
+                        .frame(width: 38, height: 38).background(.white.opacity(0.18), in: Circle())
+                }
+            }
+        }
+        .padding(.top, 8)
+        .contentShape(Rectangle())
+        .gesture(DragGesture().onEnded { if $0.translation.height > 80 { isPresented = false } })
+    }
+
+    private func circleButton(_ name: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: name)
+                .font(.headline)
+                .foregroundStyle(.white)
+                .frame(width: 38, height: 38)
+                .background(.white.opacity(0.18), in: Circle())
+        }
     }
 
     private var artwork: some View {
@@ -134,13 +182,9 @@ struct NowPlayingView: View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(player.currentTrack?.title ?? "")
-                    .font(.title2.bold())
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
+                    .font(.title2.bold()).foregroundStyle(.white).lineLimit(1)
                 Text(player.currentTrack?.artist ?? "")
-                    .font(.title3)
-                    .foregroundStyle(.white.opacity(0.7))
-                    .lineLimit(1)
+                    .font(.title3).foregroundStyle(.white.opacity(0.7)).lineLimit(1)
             }
             Spacer()
             Button {
@@ -155,14 +199,11 @@ struct NowPlayingView: View {
 
     private var progress: some View {
         VStack(spacing: 4) {
-            Slider(
-                value: $scrub,
-                in: 0...max(player.duration, 0.1),
-                onEditingChanged: { editing in
-                    isScrubbing = editing
-                    if !editing { player.seek(to: scrub) }
-                }
-            )
+            Slider(value: $scrub, in: 0...max(player.duration, 0.1),
+                   onEditingChanged: { editing in
+                       isScrubbing = editing
+                       if !editing { player.seek(to: scrub) }
+                   })
             .tint(.white)
             HStack {
                 Text(formatTime(scrub))
@@ -170,24 +211,19 @@ struct NowPlayingView: View {
                 Text("-" + formatTime(max(0, player.duration - scrub)))
             }
             .font(.caption)
-            .foregroundStyle(.white.opacity(0.6))
+            .foregroundStyle(.white.opacity(0.65))
         }
     }
 
     private var controls: some View {
         HStack {
-            Button { player.previous() } label: {
-                Image(systemName: "backward.fill").font(.title)
-            }
+            Button { player.previous() } label: { Image(systemName: "backward.fill").font(.title) }
             Spacer()
             Button { player.togglePlayPause() } label: {
-                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 54))
+                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.system(size: 54))
             }
             Spacer()
-            Button { player.next() } label: {
-                Image(systemName: "forward.fill").font(.title)
-            }
+            Button { player.next() } label: { Image(systemName: "forward.fill").font(.title) }
         }
         .foregroundStyle(.white)
         .padding(.horizontal, 24)
@@ -200,15 +236,8 @@ struct NowPlayingView: View {
                     .foregroundStyle(player.isShuffled ? Color.accentColor : .white.opacity(0.8))
             }
             Spacer()
-            VolumeSlider()
-                .frame(height: 28)
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 16)
+            VolumeSlider().frame(height: 28).frame(maxWidth: .infinity).padding(.horizontal, 16)
             Spacer()
-            Button { showQueue = true } label: {
-                Image(systemName: "list.bullet")
-                    .foregroundStyle(.white.opacity(0.8))
-            }
             Button { player.cycleRepeat() } label: {
                 Image(systemName: player.repeatMode == .one ? "repeat.1" : "repeat")
                     .foregroundStyle(player.repeatMode == .off ? .white.opacity(0.8) : Color.accentColor)
@@ -216,6 +245,41 @@ struct NowPlayingView: View {
         }
         .font(.title3)
         .padding(.top, 4)
+    }
+}
+
+// MARK: - utility row is defined as an extension member below
+
+extension NowPlayingView {
+    var utilityRow: some View {
+        HStack {
+            Menu {
+                Button("Off") { player.cancelSleepTimer() }
+                ForEach([5, 10, 15, 30, 45, 60], id: \.self) { m in
+                    Button("\(m) minutes") { player.startSleepTimer(minutes: m) }
+                }
+                Button("End of Track") { player.sleepAtEndOfTrack() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "moon.zzz")
+                    if player.sleepTimerMinutes != nil || player.sleepAtTrackEnd {
+                        Text(player.sleepStatusText).font(.caption)
+                    }
+                }
+                .foregroundStyle((player.sleepTimerMinutes != nil || player.sleepAtTrackEnd)
+                                 ? Color.accentColor : .white.opacity(0.85))
+            }
+            Spacer()
+            Button { showLyrics = true } label: {
+                Image(systemName: "quote.bubble").foregroundStyle(.white.opacity(0.85))
+            }
+            Spacer()
+            Button { showQueue = true } label: {
+                Image(systemName: "list.bullet").foregroundStyle(.white.opacity(0.85))
+            }
+        }
+        .font(.title3)
+        .padding(.top, 2)
     }
 }
 
@@ -230,22 +294,32 @@ struct VolumeSlider: UIViewRepresentable {
     func updateUIView(_ uiView: MPVolumeView, context: Context) {}
 }
 
-// MARK: - Queue
+// MARK: - Queue (editable: reorder / remove / clear)
 struct QueueView: View {
     @EnvironmentObject var player: PlayerEngine
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             List {
                 if let current = player.currentTrack {
-                    Section("Now Playing") {
-                        TrackRow(track: current)
-                    }
+                    Section("Now Playing") { TrackRow(track: current) }
                 }
-                if !player.upNext.isEmpty {
-                    Section("Up Next") {
-                        ForEach(player.upNext) { track in
-                            TrackRow(track: track)
+                if player.upNext.isEmpty {
+                    Text("Nothing in the queue")
+                        .foregroundStyle(.secondary)
+                        .listRowSeparator(.hidden)
+                } else {
+                    Section {
+                        ForEach(player.upNext) { track in TrackRow(track: track) }
+                            .onDelete { player.removeFromUpNext(at: $0) }
+                            .onMove { player.moveUpNext(from: $0, to: $1) }
+                    } header: {
+                        HStack {
+                            Text("Playing Next")
+                            Spacer()
+                            Button("Clear") { player.clearUpNext() }
+                                .font(.subheadline).textCase(nil)
                         }
                     }
                 }
@@ -254,6 +328,12 @@ struct QueueView: View {
             .scrollContentBackground(.hidden)
             .navigationTitle("Playing Next")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) { Button("Done") { dismiss() } }
+                if !player.upNext.isEmpty {
+                    ToolbarItem(placement: .topBarTrailing) { EditButton() }
+                }
+            }
         }
     }
 }

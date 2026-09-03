@@ -1,4 +1,6 @@
 import SwiftUI
+import PhotosUI
+import UniformTypeIdentifiers
 
 enum PlaylistListSort: String, CaseIterable, Identifiable {
     case recentlyAdded = "Recently Added"
@@ -11,6 +13,7 @@ struct PlaylistCover: View {
     let tracks: [Track]
     let kind: PlaylistKind
     var corner: CGFloat = 8
+    var coverData: Data? = nil
 
     var body: some View {
         content
@@ -38,7 +41,11 @@ struct PlaylistCover: View {
                 Image(systemName: "mic.fill").font(.system(size: 28, weight: .medium)).foregroundStyle(.white)
             }
         case .user:
-            mosaic
+            if let coverData, let ui = UIImage(data: coverData) {
+                Image(uiImage: ui).resizable().aspectRatio(contentMode: .fill)
+            } else {
+                mosaic
+            }
         }
     }
 
@@ -76,6 +83,11 @@ struct PlaylistsView: View {
     @State private var sort: PlaylistListSort = .recentlyAdded
     @State private var query = ""
     @State private var showNew = false
+    @State private var showImporter = false
+
+    private var m3uTypes: [UTType] {
+        [UTType(filenameExtension: "m3u8"), UTType(filenameExtension: "m3u"), .plainText].compactMap { $0 }
+    }
 
     private var displayed: [Playlist] {
         let all = playlists.playlists
@@ -130,7 +142,10 @@ struct PlaylistsView: View {
         .searchable(text: $query, prompt: "Find in Playlists")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button { showNew = true } label: { Image(systemName: "plus") }
+                Menu {
+                    Button { showNew = true } label: { Label("New Playlist", systemImage: "plus") }
+                    Button { showImporter = true } label: { Label("Import Playlist (M3U)", systemImage: "square.and.arrow.down") }
+                } label: { Image(systemName: "plus") }
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
@@ -143,11 +158,18 @@ struct PlaylistsView: View {
         .sheet(isPresented: $showNew) {
             NewPlaylistSheet { name in _ = playlists.createPlaylist(name: name) }
         }
+        .fileImporter(isPresented: $showImporter, allowedContentTypes: m3uTypes,
+                      allowsMultipleSelection: false) { result in
+            if case .success(let urls) = result, let url = urls.first {
+                playlists.importM3U(from: url, library: library)
+            }
+        }
     }
 
     private func row(_ playlist: Playlist) -> some View {
         HStack(spacing: 12) {
-            PlaylistCover(tracks: playlists.tracks(for: playlist, in: library), kind: playlist.kind)
+            PlaylistCover(tracks: playlists.tracks(for: playlist, in: library), kind: playlist.kind,
+                          coverData: playlist.coverImageData)
                 .frame(width: 58, height: 58)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 5) {
@@ -177,9 +199,12 @@ struct PlaylistDetailView: View {
     @EnvironmentObject var library: LibraryStore
     @EnvironmentObject var player: PlayerEngine
     @State private var showAddSongs = false
+    @State private var showEditDetails = false
     @State private var sortMode: PlaylistSort = .custom
     @State private var query = ""
     @State private var editMode: EditMode = .inactive
+    @State private var showExported = false
+    @State private var exportedURL: URL?
 
     private var playlist: Playlist? { playlists.playlists.first { $0.id == playlistID } }
     private var storedTracks: [Track] { playlist.map { playlists.tracks(for: $0, in: library) } ?? [] }
@@ -233,10 +258,7 @@ struct PlaylistDetailView: View {
             } else {
                 Section {
                     ForEach(Array(displayedTracks.enumerated()), id: \.element.id) { index, track in
-                        Button { player.play(tracks: displayedTracks, startAt: index) } label: {
-                            TrackRow(track: track)
-                        }
-                        .buttonStyle(.plain)
+                        TrackRow(track: track, onPlay: { player.play(tracks: displayedTracks, startAt: index) })
                     }
                     .onDelete { offsets in
                         offsets.map { displayedTracks[$0].id }
@@ -276,8 +298,20 @@ struct PlaylistDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $query, prompt: "Find in Playlist")
         .toolbar {
+            if canReorder && !storedTracks.isEmpty {
+                ToolbarItem(placement: .topBarTrailing) { EditButton() }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
+                    if playlist?.kind == .user {
+                        Button { showEditDetails = true } label: { Label("Edit Details", systemImage: "pencil") }
+                    }
+                    Button {
+                        if let p = playlist {
+                            exportedURL = playlists.exportM3U(p, tracks: storedTracks)
+                            showExported = exportedURL != nil
+                        }
+                    } label: { Label("Export as M3U", systemImage: "square.and.arrow.up") }
                     Button { showAddSongs = true } label: { Label("Add Songs", systemImage: "plus") }
                     Picker("Sort By", selection: $sortMode) {
                         ForEach(PlaylistSort.allCases) { Text($0.rawValue).tag($0) }
@@ -296,18 +330,63 @@ struct PlaylistDetailView: View {
                 .environmentObject(library)
                 .environmentObject(player)
         }
+        .sheet(isPresented: $showEditDetails) {
+            EditPlaylistDetailsView(playlistID: playlistID).environmentObject(playlists)
+        }
+        .alert("Exported", isPresented: $showExported) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("Saved \(exportedURL?.lastPathComponent ?? "playlist.m3u8") to Files → On My iPhone → Music.")
+        }
     }
 
+    private var totalDuration: Double { storedTracks.reduce(0) { $0 + $1.duration } }
+
     private var header: some View {
-        VStack(spacing: 14) {
-            PlaylistCover(tracks: storedTracks, kind: playlist?.kind ?? .user, corner: 12)
+        VStack(spacing: 12) {
+            PlaylistCover(tracks: storedTracks, kind: playlist?.kind ?? .user, corner: 12,
+                          coverData: playlist?.coverImageData)
                 .frame(width: 200, height: 200)
                 .shadow(color: .black.opacity(0.2), radius: 12, y: 6)
             Text(playlist?.name ?? "").font(.title2.bold()).multilineTextAlignment(.center)
-            PlayShuffleButtons(tracks: displayedTracks)
+            if let details = playlist?.details, !details.isEmpty {
+                Text(details).font(.subheadline).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            Text("\(songCountString(storedTracks.count)) · \(totalTimeString(totalDuration))")
+                .font(.caption).foregroundStyle(.secondary)
+            PlayShuffleButtons(tracks: displayedTracks).padding(.top, 4)
+            pillRow
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 8)
+    }
+
+    private var pillRow: some View {
+        HStack(spacing: 10) {
+            pill("Add", "plus") { showAddSongs = true }
+            if playlist?.kind == .user {
+                pill("Edit", "pencil") { showEditDetails = true }
+            }
+            Menu {
+                Picker("Sort By", selection: $sortMode) {
+                    ForEach(PlaylistSort.allCases) { Text($0.rawValue).tag($0) }
+                }
+            } label: { pillLabel("Sort", "arrow.up.arrow.down") }
+        }
+        .padding(.top, 2)
+    }
+
+    private func pill(_ title: String, _ icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) { pillLabel(title, icon) }.buttonStyle(.plain)
+    }
+
+    private func pillLabel(_ title: String, _ icon: String) -> some View {
+        Label(title, systemImage: icon)
+            .font(.subheadline.weight(.medium))
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .background(Color(.systemGray5), in: Capsule())
+            .foregroundStyle(.primary)
     }
 }
 
@@ -433,5 +512,86 @@ struct NewPlaylistSheet: View {
                 }
         }
         .presentationDetents([.height(200)])
+    }
+}
+
+
+// MARK: - Edit playlist details (name, description, custom cover)
+struct EditPlaylistDetailsView: View {
+    let playlistID: String
+    @EnvironmentObject var playlists: PlaylistStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var details = ""
+    @State private var pickerItem: PhotosPickerItem?
+    @State private var coverData: Data?
+    @State private var loaded = false
+
+    private var playlist: Playlist? { playlists.playlists.first { $0.id == playlistID } }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    HStack {
+                        Spacer()
+                        PhotosPicker(selection: $pickerItem, matching: .images) {
+                            Group {
+                                if let coverData, let ui = UIImage(data: coverData) {
+                                    Image(uiImage: ui).resizable().aspectRatio(contentMode: .fill)
+                                } else {
+                                    ZStack {
+                                        RoundedRectangle(cornerRadius: 12).fill(Color(.systemGray5))
+                                        VStack(spacing: 6) {
+                                            Image(systemName: "camera.fill").font(.title2)
+                                            Text("Choose Photo").font(.caption)
+                                        }
+                                        .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                            .frame(width: 160, height: 160)
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        }
+                        Spacer()
+                    }
+                    if coverData != nil {
+                        Button("Remove Photo", role: .destructive) { coverData = nil }
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+                .listRowBackground(Color.clear)
+
+                Section {
+                    TextField("Playlist Name", text: $name)
+                    TextField("Description", text: $details, axis: .vertical).lineLimit(1...4)
+                }
+            }
+            .navigationTitle("Edit Playlist")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        playlists.updateDetails(id: playlistID, name: name, details: details)
+                        playlists.setCover(coverData, forID: playlistID)
+                        dismiss()
+                    }
+                    .fontWeight(.semibold)
+                }
+            }
+            .onAppear {
+                guard !loaded, let p = playlist else { return }
+                name = p.name; details = p.details; coverData = p.coverImageData; loaded = true
+            }
+            .onChange(of: pickerItem) { _, item in
+                guard let item else { return }
+                Task { @MainActor in
+                    guard let data = try? await item.loadTransferable(type: Data.self),
+                          let data else { return }
+                    coverData = LibraryStore.thumbnail(from: data, maxDimension: 800) ?? data
+                }
+            }
+        }
     }
 }

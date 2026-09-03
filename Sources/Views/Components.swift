@@ -25,6 +25,15 @@ func formatTime(_ seconds: Double) -> String {
     return String(format: "%d:%02d", total / 60, total % 60)
 }
 
+func totalTimeString(_ seconds: Double) -> String {
+    let minutes = max(0, Int(seconds / 60))
+    if minutes < 60 { return "\(minutes) min" }
+    let h = minutes / 60, m = minutes % 60
+    return m == 0 ? "\(h) hr" : "\(h) hr \(m) min"
+}
+
+func songCountString(_ n: Int) -> String { n == 1 ? "1 song" : "\(n) songs" }
+
 // MARK: - Artwork
 struct ArtworkView: View {
     let data: Data?
@@ -52,10 +61,59 @@ struct ArtworkView: View {
     }
 }
 
-// MARK: - Track row (Apple Music style) with Love / Add-to-Playlist menu
+// MARK: - Shared track actions (used by the ⋯ menu and long-press)
+struct TrackActions: View {
+    let track: Track
+    var onPlay: (() -> Void)? = nil
+    var onAddToPlaylist: () -> Void
+    @EnvironmentObject var player: PlayerEngine
+    @EnvironmentObject var playlists: PlaylistStore
+
+    var body: some View {
+        if let onPlay {
+            Button { onPlay() } label: { Label("Play", systemImage: "play.fill") }
+        }
+        Button { player.playNext(track) } label: {
+            Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+        }
+        Button { player.addToQueue(track) } label: {
+            Label("Play Last", systemImage: "text.line.last.and.arrowtriangle.forward")
+        }
+        Button { onAddToPlaylist() } label: {
+            Label("Add to a Playlist…", systemImage: "text.badge.plus")
+        }
+        Button { playlists.toggleLike(track) } label: {
+            Label(playlists.isLiked(track) ? "Remove from Liked Songs" : "Love",
+                  systemImage: playlists.isLiked(track) ? "heart.slash" : "heart")
+        }
+        Menu {
+            Button("Off") { player.cancelSleepTimer() }
+            ForEach([5, 10, 15, 30, 45, 60], id: \.self) { m in
+                Button("\(m) minutes") { player.startSleepTimer(minutes: m) }
+            }
+            Button("End of Track") { player.sleepAtEndOfTrack() }
+        } label: {
+            Label("Sleep Timer", systemImage: "moon.zzz")
+        }
+    }
+}
+
+// MARK: - ⋯ menu button reused across rows
+struct TrackMenuLabel: View {
+    var body: some View {
+        Image(systemName: "ellipsis")
+            .font(.body)
+            .foregroundStyle(.secondary)
+            .frame(width: 40, height: 44)
+            .contentShape(Rectangle())
+    }
+}
+
+// MARK: - Track row (Apple Music style): tap to play + trailing ⋯ menu
 struct TrackRow: View {
     let track: Track
     var showArtwork: Bool = true
+    var onPlay: (() -> Void)? = nil
     @EnvironmentObject var player: PlayerEngine
     @EnvironmentObject var playlists: PlaylistStore
     @State private var showAdd = false
@@ -63,39 +121,42 @@ struct TrackRow: View {
     private var isCurrent: Bool { player.currentTrack?.id == track.id }
 
     var body: some View {
-        HStack(spacing: 12) {
-            if showArtwork {
-                ArtworkView(data: track.artworkData, corner: 6).frame(width: 48, height: 48)
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(track.title)
-                    .foregroundStyle(isCurrent ? Color.accentColor : .primary)
-                    .lineLimit(1)
-                Text(track.artist).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-            }
-            Spacer(minLength: 8)
-            if playlists.isLiked(track) {
-                Image(systemName: "heart.fill").font(.caption).foregroundStyle(Color.accentColor)
-            }
-            if isCurrent {
-                Image(systemName: player.isPlaying ? "waveform" : "pause.fill")
-                    .font(.footnote)
-                    .foregroundStyle(Color.accentColor)
-                    .symbolEffect(.variableColor.iterative, isActive: player.isPlaying)
-            }
-        }
-        .contentShape(Rectangle())
-        .contextMenu {
-            Button { playlists.toggleLike(track) } label: {
-                if playlists.isLiked(track) {
-                    Label("Remove from Liked Songs", systemImage: "heart.slash")
-                } else {
-                    Label("Love", systemImage: "heart")
+        HStack(spacing: 8) {
+            Button { onPlay?() } label: {
+                HStack(spacing: 12) {
+                    if showArtwork {
+                        ArtworkView(data: track.artworkData, corner: 6).frame(width: 48, height: 48)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(track.title)
+                            .foregroundStyle(isCurrent ? Color.accentColor : .primary)
+                            .lineLimit(1)
+                        Text(track.artist).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    Spacer(minLength: 8)
+                    if playlists.isLiked(track) {
+                        Image(systemName: "heart.fill").font(.caption).foregroundStyle(Color.accentColor)
+                    }
+                    if isCurrent {
+                        Image(systemName: player.isPlaying ? "waveform" : "pause.fill")
+                            .font(.footnote)
+                            .foregroundStyle(Color.accentColor)
+                            .symbolEffect(.variableColor.iterative, isActive: player.isPlaying)
+                    }
                 }
+                .contentShape(Rectangle())
             }
-            Button { showAdd = true } label: {
-                Label("Add to a Playlist…", systemImage: "text.badge.plus")
+            .buttonStyle(.plain)
+
+            Menu {
+                TrackActions(track: track, onPlay: onPlay, onAddToPlaylist: { showAdd = true })
+            } label: {
+                TrackMenuLabel()
             }
+            .buttonStyle(.plain)
+        }
+        .contextMenu {
+            TrackActions(track: track, onPlay: onPlay, onAddToPlaylist: { showAdd = true })
         }
         .sheet(isPresented: $showAdd) {
             AddToPlaylistView(track: track).environmentObject(playlists)

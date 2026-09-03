@@ -57,15 +57,16 @@ final class PlaylistStoreTests: XCTestCase {
         XCTAssertFalse(store.isLiked(t))
     }
 
-    func testPinCapAtFour() {
+    func testPinCapAtTwenty() {
         let store = makeStore()
-        let created = (0..<6).map { store.createPlaylist(name: "P\($0)") }
+        let created = (0..<25).map { store.createPlaylist(name: "P\($0)") }
         for p in created {
             if let current = store.playlists.first(where: { $0.id == p.id }) {
                 store.togglePin(current)
             }
         }
-        XCTAssertLessThanOrEqual(store.playlists.filter { $0.isPinned }.count, 4)
+        // cap is 20; pinning 25 leaves exactly 20 pinned
+        XCTAssertEqual(store.playlists.filter { $0.isPinned }.count, 20)
     }
 
     func testOrderedPlaylistsPinnedFirst() {

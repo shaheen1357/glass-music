@@ -17,11 +17,15 @@ final class PlayerEngine: ObservableObject {
     @Published var duration: Double = 0
     @Published var repeatMode: RepeatMode = .off
     @Published var isShuffled = false
+    @Published var sleepTimerMinutes: Int? = nil
+    @Published var sleepAtTrackEnd = false
 
     private var player: AVPlayer?
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
     private var originalQueue: [Track] = []
+    private var sleepTask: Task<Void, Never>?
+    var onPlay: ((Track) -> Void)?
 
     var currentTrack: Track? {
         guard queue.indices.contains(currentIndex) else { return nil }
@@ -63,6 +67,7 @@ final class PlayerEngine: ObservableObject {
 
     private func startCurrent() {
         guard let track = currentTrack else { return }
+        onPlay?(track)
 
         if let timeObserver { player?.removeTimeObserver(timeObserver); self.timeObserver = nil }
         if let endObserver { NotificationCenter.default.removeObserver(endObserver); self.endObserver = nil }
@@ -102,6 +107,13 @@ final class PlayerEngine: ObservableObject {
     }
 
     private func trackDidEnd() {
+        if sleepAtTrackEnd {
+            sleepAtTrackEnd = false
+            player?.pause()
+            isPlaying = false
+            updateNowPlayingInfo()
+            return
+        }
         switch repeatMode {
         case .one:
             seek(to: 0)
@@ -196,6 +208,69 @@ final class PlayerEngine: ObservableObject {
         case .all: repeatMode = .one
         case .one: repeatMode = .off
         }
+    }
+
+    // MARK: - Queue editing
+    func addToQueue(_ track: Track) {
+        if queue.isEmpty { play(tracks: [track], startAt: 0) }
+        else { queue.append(track); updateNowPlayingInfo() }
+    }
+
+    func playNext(_ track: Track) {
+        if queue.isEmpty { play(tracks: [track], startAt: 0) }
+        else { queue.insert(track, at: min(currentIndex + 1, queue.count)) }
+    }
+
+    func removeFromUpNext(at offsets: IndexSet) {
+        guard !queue.isEmpty, currentIndex < queue.count else { return }
+        var up = upNext
+        up.remove(atOffsets: offsets)
+        queue = Array(queue[0...currentIndex]) + up
+    }
+
+    func moveUpNext(from source: IndexSet, to destination: Int) {
+        guard !queue.isEmpty, currentIndex < queue.count else { return }
+        var up = upNext
+        up.move(fromOffsets: source, toOffset: destination)
+        queue = Array(queue[0...currentIndex]) + up
+    }
+
+    func clearUpNext() {
+        guard !queue.isEmpty, currentIndex < queue.count else { return }
+        queue = Array(queue[0...currentIndex])
+    }
+
+    // MARK: - Sleep timer
+    func startSleepTimer(minutes: Int) {
+        cancelSleepTimer()
+        sleepTimerMinutes = minutes
+        sleepTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(Double(minutes) * 60))
+            guard let self, !Task.isCancelled else { return }
+            self.player?.pause()
+            self.isPlaying = false
+            self.updateNowPlayingInfo()
+            self.sleepTimerMinutes = nil
+            self.sleepTask = nil
+        }
+    }
+
+    func sleepAtEndOfTrack() {
+        cancelSleepTimer()
+        sleepAtTrackEnd = true
+    }
+
+    func cancelSleepTimer() {
+        sleepTask?.cancel()
+        sleepTask = nil
+        sleepTimerMinutes = nil
+        sleepAtTrackEnd = false
+    }
+
+    var sleepStatusText: String {
+        if let minutes = sleepTimerMinutes { return "\(minutes) min" }
+        if sleepAtTrackEnd { return "End of Track" }
+        return "Off"
     }
 
     // MARK: - Now Playing info / remote commands
