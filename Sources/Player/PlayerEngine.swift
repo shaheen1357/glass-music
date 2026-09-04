@@ -25,6 +25,26 @@ final class PlayerEngine {
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
     private var currentFormat: AVAudioFormat?
+    private let eq = AVAudioUnitEQ(numberOfBands: 10)
+
+    // MARK: EQ (user-facing state; tracked by @Observable so the UI reflects it)
+    static let eqBandLabels = ["32 Hz", "64 Hz", "125 Hz", "250 Hz", "500 Hz", "1 kHz", "2 kHz", "4 kHz", "8 kHz", "16 kHz"]
+    private static let eqCenters: [Float] = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+    struct EQPreset: Identifiable {
+        var id: String { name }
+        let name: String
+        let gains: [Float]
+    }
+    static let eqPresets: [EQPreset] = [
+        EQPreset(name: "Flat",         gains: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+        EQPreset(name: "Bass Boost",   gains: [6, 5, 4, 2, 0, 0, 0, 0, 0, 0]),
+        EQPreset(name: "Treble Boost", gains: [0, 0, 0, 0, 0, 0, 2, 3, 5, 6]),
+        EQPreset(name: "Vocal",        gains: [-2, -1, 0, 2, 4, 4, 3, 1, 0, -1]),
+        EQPreset(name: "Loudness",     gains: [5, 4, 1, 0, -1, -1, 0, 2, 4, 5]),
+        EQPreset(name: "Acoustic",     gains: [4, 3, 2, 0, 1, 1, 3, 3, 2, 1])
+    ]
+    private(set) var eqEnabled = false
+    private(set) var eqGains: [Float] = Array(repeating: 0, count: 10)
 
     // MARK: Playback bookkeeping
     private var audioFile: AVAudioFile?
@@ -53,6 +73,9 @@ final class PlayerEngine {
 
     init() {
         engine.attach(playerNode)
+        engine.attach(eq)
+        setupEQBands()
+        loadEQSettings()
         configureSession()
         setupRemoteCommands()
     }
@@ -97,12 +120,17 @@ final class PlayerEngine {
 
     /// Connect (or reconnect) the graph for a given file format. The player node
     /// must be stopped before calling this.
+    private func wire(_ format: AVAudioFormat) {
+        engine.connect(playerNode, to: eq, format: format)
+        engine.connect(eq, to: engine.mainMixerNode, format: format)
+    }
+
     private func connectGraph(format: AVAudioFormat) {
         if let cur = currentFormat,
            cur.sampleRate == format.sampleRate,
            cur.channelCount == format.channelCount { return }
         currentFormat = format
-        engine.connect(playerNode, to: engine.mainMixerNode, format: format)
+        wire(format)
     }
 
     // MARK: - Interruption / route / config handling
@@ -153,7 +181,7 @@ final class PlayerEngine {
         pausedFrame = currentFrame
         isPlaying = false
         stopDisplayTimer()
-        if let fmt = currentFormat { engine.connect(playerNode, to: engine.mainMixerNode, format: fmt) }
+        if let fmt = currentFormat { wire(fmt) }
         needsReschedule = true
         updateNowPlayingInfo()
     }
@@ -165,7 +193,7 @@ final class PlayerEngine {
         let resumeFrame = min(max(0, AVAudioFramePosition(max(0, currentTime) * sampleRate)), audioLengthSamples)
         do {
             activateSession()
-            if let fmt = currentFormat { engine.connect(playerNode, to: engine.mainMixerNode, format: fmt) }
+            if let fmt = currentFormat { wire(fmt) }
             try startEngineIfNeeded()
             playerNode.stop()
             seekFrame = resumeFrame
@@ -500,6 +528,54 @@ final class PlayerEngine {
         if let minutes = sleepTimerMinutes { return "\(minutes) min" }
         if sleepAtTrackEnd { return "End of Track" }
         return "Off"
+    }
+
+    // MARK: - Equalizer
+    private func setupEQBands() {
+        for (i, band) in eq.bands.enumerated() {
+            band.filterType = .parametric
+            band.frequency = Self.eqCenters[i]
+            band.bandwidth = 0.5
+            band.gain = 0
+            band.bypass = false
+        }
+        eq.globalGain = 0
+    }
+
+    func setEQEnabled(_ on: Bool) { eqEnabled = on; applyEQ() }
+
+    func setEQBand(_ index: Int, gain: Float) {
+        guard eqGains.indices.contains(index) else { return }
+        eqGains[index] = gain
+        applyEQ()
+    }
+
+    func applyEQPreset(_ gains: [Float]) {
+        guard gains.count == eqGains.count else { return }
+        eqGains = gains
+        eqEnabled = true
+        applyEQ()
+    }
+
+    private func applyEQ() {
+        eq.bypass = !eqEnabled
+        for (i, band) in eq.bands.enumerated() where i < eqGains.count {
+            band.gain = max(-12, min(12, eqGains[i]))
+        }
+        saveEQSettings()
+    }
+
+    private func saveEQSettings() {
+        UserDefaults.standard.set(eqEnabled, forKey: "eq.enabled")
+        UserDefaults.standard.set(eqGains.map { Double($0) }, forKey: "eq.gains")
+    }
+
+    private func loadEQSettings() {
+        eqEnabled = UserDefaults.standard.bool(forKey: "eq.enabled")
+        if let g = UserDefaults.standard.array(forKey: "eq.gains") as? [Double], g.count == eqGains.count {
+            eqGains = g.map { Float($0) }
+        }
+        applyEQ()
     }
 
     // MARK: - Now Playing info / remote commands

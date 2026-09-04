@@ -33,13 +33,16 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    comingSoon("Equalizer", "Adjust frequencies to shape your sound.")
-                    comingSoon("Mono Audio", "Play the same audio in both channels.")
+                    NavigationLink {
+                        EqualizerView()
+                    } label: {
+                        Label("Equalizer", systemImage: "slider.vertical.3").foregroundStyle(.primary)
+                    }
                     comingSoon("Volume Normalization", "Even out loudness across tracks.")
                 } header: {
                     Text("Audio")
                 } footer: {
-                    Text("These need the advanced audio engine (AVAudioEngine) — planned for a future update.")
+                    Text("Equalizer is live. Volume normalization is next.")
                 }
 
                 Section("Library") {
