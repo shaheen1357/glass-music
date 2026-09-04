@@ -2,7 +2,7 @@ import SwiftUI
 
 struct SearchView: View {
     @EnvironmentObject var library: LibraryStore
-    @EnvironmentObject var player: PlayerEngine
+    @Environment(PlayerEngine.self) private var player
     @EnvironmentObject var history: SearchHistoryStore
     @State private var query = ""
 

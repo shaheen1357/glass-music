@@ -12,7 +12,7 @@ enum LibraryFilter: String, CaseIterable, Identifiable {
 
 struct LibraryView: View {
     @EnvironmentObject var library: LibraryStore
-    @EnvironmentObject var player: PlayerEngine
+    @Environment(PlayerEngine.self) private var player
     @EnvironmentObject var playlists: PlaylistStore
     @EnvironmentObject var stats: PlayStatsStore
 
@@ -52,7 +52,7 @@ struct LibraryView: View {
                 }
             }
             .sheet(isPresented: $showSettings) {
-                SettingsView().environmentObject(player).environmentObject(library)
+                SettingsView().environment(player).environmentObject(library)
             }
             .sheet(isPresented: $showNewPlaylist) {
                 NewPlaylistSheet { name in _ = playlists.createPlaylist(name: name) }
@@ -287,7 +287,7 @@ struct EmptyLibraryHint: View {
 struct SongsView: View {
     let title: String
     let tracks: [Track]
-    @EnvironmentObject var player: PlayerEngine
+    @Environment(PlayerEngine.self) private var player
     @State private var sort: ItemSort = .title
     @State private var query = ""
 
@@ -370,7 +370,7 @@ struct AlbumsView: View {
 // MARK: - Album detail (Apple Music look)
 struct AlbumDetailView: View {
     let album: Album
-    @EnvironmentObject var player: PlayerEngine
+    @Environment(PlayerEngine.self) private var player
     @EnvironmentObject var playlists: PlaylistStore
     @State private var addTrack: Track?
 
@@ -486,7 +486,7 @@ struct SortMenu: View {
 
 struct PlayShuffleButtons: View {
     let tracks: [Track]
-    @EnvironmentObject var player: PlayerEngine
+    @Environment(PlayerEngine.self) private var player
 
     var body: some View {
         HStack(spacing: 12) {

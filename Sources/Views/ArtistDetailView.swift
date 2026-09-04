@@ -2,7 +2,7 @@ import SwiftUI
 
 struct ArtistDetailView: View {
     let artist: ArtistGroup
-    @EnvironmentObject var player: PlayerEngine
+    @Environment(PlayerEngine.self) private var player
 
     private var albums: [Album] {
         let byAlbum = Dictionary(grouping: artist.tracks) { $0.album }

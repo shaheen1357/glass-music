@@ -5,7 +5,7 @@ struct FolderBrowseView: View {
     let directory: URL
     let title: String
     @EnvironmentObject var library: LibraryStore
-    @EnvironmentObject var player: PlayerEngine
+    @Environment(PlayerEngine.self) private var player
 
     private static let audioExtensions: Set<String> = [
         "mp3", "m4a", "aac", "flac", "alac", "wav", "aif", "aiff", "caf", "m4b", "ogg"

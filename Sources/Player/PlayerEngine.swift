@@ -3,26 +3,40 @@ import AVFoundation
 import MediaPlayer
 import Combine
 import UIKit
+import Observation
 
 enum RepeatMode {
     case off, all, one
 }
 
 @MainActor
-final class PlayerEngine: ObservableObject {
-    @Published private(set) var queue: [Track] = []
-    @Published private(set) var currentIndex: Int = 0
-    @Published private(set) var isPlaying = false
-    @Published var currentTime: Double = 0
-    @Published var duration: Double = 0
-    @Published var repeatMode: RepeatMode = .off
-    @Published var isShuffled = false
-    @Published var sleepTimerMinutes: Int? = nil
-    @Published var sleepAtTrackEnd = false
+@Observable
+final class PlayerEngine {
+    private(set) var queue: [Track] = []
+    private(set) var currentIndex: Int = 0
+    private(set) var isPlaying = false
+    var currentTime: Double = 0
+    var duration: Double = 0
+    var repeatMode: RepeatMode = .off
+    var isShuffled = false
+    var sleepTimerMinutes: Int? = nil
+    var sleepAtTrackEnd = false
 
-    private var player: AVPlayer?
-    private var timeObserver: Any?
-    private var endObserver: NSObjectProtocol?
+    // MARK: Audio engine graph  (playerNode -> mainMixer -> output)
+    private let engine = AVAudioEngine()
+    private let playerNode = AVAudioPlayerNode()
+    private var currentFormat: AVAudioFormat?
+
+    // MARK: Playback bookkeeping
+    private var audioFile: AVAudioFile?
+    private var sampleRate: Double = 44_100
+    private var audioLengthSamples: AVAudioFramePosition = 0
+    private var seekFrame: AVAudioFramePosition = 0        // where the current schedule started
+    private var pausedFrame: AVAudioFramePosition?         // frozen playhead while paused
+    private var scheduleGeneration = 0                     // guards stale completion callbacks
+    private var isSuspended = false                        // true across interruption / device-loss
+    private var displayTimer: Timer?
+
     private var originalQueue: [Track] = []
     private var sleepTask: Task<Void, Never>?
     var onPlay: ((Track) -> Void)?
@@ -38,12 +52,34 @@ final class PlayerEngine: ObservableObject {
     }
 
     init() {
+        engine.attach(playerNode)
         configureSession()
         setupRemoteCommands()
     }
 
-    // MARK: - Session
+    // MARK: - Session & engine lifecycle
     private func configureSession() {
+        activateSession()
+        let session = AVAudioSession.sharedInstance()
+        // Phone calls / Siri / alarms.
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification, object: session, queue: .main
+        ) { [weak self] note in Task { @MainActor in self?.handleInterruption(note) } }
+        // Headphones / Bluetooth / DAC unplug.
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification, object: session, queue: .main
+        ) { [weak self] note in Task { @MainActor in self?.handleRouteChange(note) } }
+        // Route/format change — the engine has already stopped; we must restart it.
+        NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
+        ) { [weak self] _ in Task { @MainActor in self?.handleConfigurationChange() } }
+        // Media services reset — every audio object is invalid; rebuild in place.
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main
+        ) { [weak self] _ in Task { @MainActor in self?.handleMediaServicesReset() } }
+    }
+
+    private func activateSession() {
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(.playback, mode: .default)
@@ -51,35 +87,41 @@ final class PlayerEngine: ObservableObject {
         } catch {
             print("Audio session error: \(error)")
         }
-        // Pause for phone calls / Siri / alarms, and resume when the system allows.
-        NotificationCenter.default.addObserver(
-            forName: AVAudioSession.interruptionNotification,
-            object: session,
-            queue: .main
-        ) { [weak self] note in
-            Task { @MainActor in self?.handleInterruption(note) }
-        }
-        // Pause when headphones / Bluetooth are unplugged (matches iOS behavior).
-        NotificationCenter.default.addObserver(
-            forName: AVAudioSession.routeChangeNotification,
-            object: session,
-            queue: .main
-        ) { [weak self] note in
-            Task { @MainActor in self?.handleRouteChange(note) }
-        }
     }
 
+    private func startEngineIfNeeded() throws {
+        guard !engine.isRunning else { return }
+        engine.prepare()
+        try engine.start()
+    }
+
+    /// Connect (or reconnect) the graph for a given file format. The player node
+    /// must be stopped before calling this.
+    private func connectGraph(format: AVAudioFormat) {
+        if let cur = currentFormat,
+           cur.sampleRate == format.sampleRate,
+           cur.channelCount == format.channelCount { return }
+        currentFormat = format
+        engine.connect(playerNode, to: engine.mainMixerNode, format: format)
+    }
+
+    // MARK: - Interruption / route / config handling
     private func handleInterruption(_ note: Notification) {
         guard let info = note.userInfo,
               let raw = info[AVAudioSessionInterruptionTypeKey] as? UInt,
               let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
         switch type {
         case .began:
-            pause()
+            isSuspended = true                 // Core Audio already stopped the engine
+            pausedFrame = currentFrame
+            isPlaying = false
+            stopDisplayTimer()
+            updateNowPlayingInfo()
         case .ended:
+            isSuspended = false
             if let optRaw = info[AVAudioSessionInterruptionOptionKey] as? UInt,
                AVAudioSession.InterruptionOptions(rawValue: optRaw).contains(.shouldResume) {
-                resume()
+                restartAndResume()
             }
         @unknown default:
             break
@@ -90,7 +132,83 @@ final class PlayerEngine: ObservableObject {
         guard let info = note.userInfo,
               let raw = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
               let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
-        if reason == .oldDeviceUnavailable { pause() }
+        if reason == .oldDeviceUnavailable {
+            // Headphones/DAC pulled: pause and suppress the trailing config-change
+            // auto-restart so we don't blast the speaker.
+            isSuspended = true
+            pause()
+        }
+    }
+
+    private func handleConfigurationChange() {
+        // Fires after route/format changes (and as a side effect of interruptions).
+        guard !isSuspended, isPlaying, audioFile != nil else { return }
+        restartAndResume()
+    }
+
+    private func handleMediaServicesReset() {
+        // Everything is invalid. Reuse the SAME engine instance (a new one would
+        // crash on re-attach). Reactivate the session, reconnect, leave paused.
+        activateSession()
+        pausedFrame = currentFrame
+        isPlaying = false
+        stopDisplayTimer()
+        if let fmt = currentFormat { engine.connect(playerNode, to: engine.mainMixerNode, format: fmt) }
+        updateNowPlayingInfo()
+    }
+
+    private func restartAndResume() {
+        guard audioFile != nil else { return }
+        let resumeFrame = currentFrame
+        do {
+            activateSession()
+            if let fmt = currentFormat { engine.connect(playerNode, to: engine.mainMixerNode, format: fmt) }
+            try startEngineIfNeeded()
+            playerNode.stop()
+            seekFrame = resumeFrame
+            pausedFrame = nil
+            scheduleSegment(from: resumeFrame)
+            playerNode.play()
+            isPlaying = true
+            startDisplayTimer()
+            updateNowPlayingInfo()
+        } catch {
+            print("Engine restart failed: \(error)")
+        }
+    }
+
+    // MARK: - Time tracking
+    /// Frames rendered by the node since its current schedule started.
+    private var renderedFrames: AVAudioFramePosition {
+        guard let nodeTime = playerNode.lastRenderTime,
+              let playerTime = playerNode.playerTime(forNodeTime: nodeTime) else { return 0 }
+        return playerTime.sampleTime
+    }
+
+    /// Absolute playhead in frames (frozen at `pausedFrame` while paused).
+    private var currentFrame: AVAudioFramePosition {
+        if let pf = pausedFrame { return max(0, min(pf, audioLengthSamples)) }
+        return max(0, min(seekFrame + renderedFrames, audioLengthSamples))
+    }
+
+    private func startDisplayTimer() {
+        stopDisplayTimer()
+        // Default run-loop mode: the timer pauses during scroll tracking, so we
+        // don't publish currentTime (and re-render views) mid-scroll.
+        displayTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.updateCurrentTime() }
+        }
+    }
+
+    private func stopDisplayTimer() {
+        displayTimer?.invalidate()
+        displayTimer = nil
+    }
+
+    private func updateCurrentTime() {
+        guard sampleRate > 0 else { return }
+        currentTime = Double(currentFrame) / sampleRate
+        refreshNowPlayingElapsed()
     }
 
     // MARK: - Playback control
@@ -109,77 +227,82 @@ final class PlayerEngine: ObservableObject {
     private func startCurrent() {
         guard let track = currentTrack else { return }
         onPlay?(track)
+        isSuspended = false
+        playerNode.stop()                       // fires a stale completion (ignored via generation)
 
-        if let timeObserver { player?.removeTimeObserver(timeObserver); self.timeObserver = nil }
-        if let endObserver { NotificationCenter.default.removeObserver(endObserver); self.endObserver = nil }
-
-        let item = AVPlayerItem(url: track.url)
-        let newPlayer = AVPlayer(playerItem: item)
-        newPlayer.automaticallyWaitsToMinimizeStalling = false
-        player = newPlayer
-
-        let interval = CMTime(seconds: 0.2, preferredTimescale: 600)
-        timeObserver = newPlayer.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
-            guard let self else { return }
-            MainActor.assumeIsolated {
-                self.currentTime = CMTimeGetSeconds(time)
-                if let itemDuration = self.player?.currentItem?.duration, itemDuration.isNumeric {
-                    let secs = CMTimeGetSeconds(itemDuration)
-                    if secs.isFinite && secs > 0 { self.duration = secs }
-                }
-                self.refreshNowPlayingElapsed()
-            }
+        do {
+            let file = try AVAudioFile(forReading: track.url)
+            audioFile = file
+            sampleRate = file.processingFormat.sampleRate
+            audioLengthSamples = file.length
+            seekFrame = 0
+            pausedFrame = nil
+            connectGraph(format: file.processingFormat)
+            try startEngineIfNeeded()
+            scheduleSegment(from: 0)
+            playerNode.play()
+            isPlaying = true
+            duration = sampleRate > 0 ? Double(audioLengthSamples) / sampleRate : track.duration
+            currentTime = 0
+            startDisplayTimer()
+            updateNowPlayingInfo()
+        } catch {
+            print("Failed to load \(track.title): \(error)")
+            audioFile = nil
+            isPlaying = false
+            stopDisplayTimer()
         }
+    }
 
-        endObserver = NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemDidPlayToEndTime,
-            object: item,
-            queue: .main
+    private func scheduleSegment(from startFrame: AVAudioFramePosition) {
+        guard let file = audioFile else { return }
+        let frames = AVAudioFrameCount(max(0, audioLengthSamples - startFrame))
+        guard frames > 0 else { return }
+        scheduleGeneration &+= 1
+        let gen = scheduleGeneration
+        playerNode.scheduleSegment(
+            file, startingFrame: startFrame, frameCount: frames, at: nil,
+            completionCallbackType: .dataPlayedBack
         ) { [weak self] _ in
-            guard let self else { return }
-            Task { @MainActor in self.trackDidEnd() }
+            Task { @MainActor in self?.segmentCompleted(gen) }
         }
+    }
 
-        duration = track.duration
-        currentTime = 0
-        newPlayer.play()
-        isPlaying = true
-        updateNowPlayingInfo()
+    private func segmentCompleted(_ gen: Int) {
+        guard gen == scheduleGeneration else { return }   // stale (seek / next / stop)
+        trackDidEnd()
     }
 
     private func trackDidEnd() {
         if sleepAtTrackEnd {
             sleepAtTrackEnd = false
-            player?.pause()
-            isPlaying = false
-            updateNowPlayingInfo()
+            pause()
             return
         }
         switch repeatMode {
         case .one:
-            seek(to: 0)
-            player?.play()
+            seekFrame = 0
+            pausedFrame = nil
+            playerNode.stop()
+            scheduleSegment(from: 0)
+            playerNode.play()
+            currentTime = 0
             isPlaying = true
+            startDisplayTimer()
+            updateNowPlayingInfo()
         case .all, .off:
             advance(auto: true)
         }
     }
 
     func togglePlayPause() {
-        guard let player else {
+        if audioFile == nil {
             if let track = currentTrack {
                 play(tracks: queue.isEmpty ? [track] : queue, startAt: currentIndex)
             }
             return
         }
-        if isPlaying {
-            player.pause()
-            isPlaying = false
-        } else {
-            player.play()
-            isPlaying = true
-        }
-        updateNowPlayingInfo()
+        if isPlaying { pause() } else { resume() }
     }
 
     func next() { advance(auto: false) }
@@ -193,10 +316,8 @@ final class PlayerEngine: ObservableObject {
             currentIndex = 0
             startCurrent()
         } else {
-            player?.pause()
-            isPlaying = false
+            pause()
             seek(to: 0)
-            updateNowPlayingInfo()
         }
     }
 
@@ -215,10 +336,54 @@ final class PlayerEngine: ObservableObject {
     }
 
     func seek(to seconds: Double) {
-        let target = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
-        player?.seek(to: target)
-        currentTime = max(0, seconds)
+        guard audioFile != nil, sampleRate > 0 else { return }
+        let wasPlaying = isPlaying
+        var target = AVAudioFramePosition(max(0, seconds) * sampleRate)
+        target = max(0, min(target, audioLengthSamples))
+        seekFrame = target
+        currentTime = Double(target) / sampleRate
+
+        playerNode.stop()                        // clears the schedule; sampleTime resets to 0
+        if target < audioLengthSamples {
+            scheduleSegment(from: target)
+            if wasPlaying {
+                pausedFrame = nil
+                playerNode.play()
+            } else {
+                pausedFrame = target
+            }
+        } else {
+            pausedFrame = target
+        }
         refreshNowPlayingElapsed()
+    }
+
+    private func resume() {
+        if audioFile == nil {
+            if currentTrack != nil { startCurrent() }
+            return
+        }
+        isSuspended = false
+        do {
+            activateSession()
+            try startEngineIfNeeded()
+            pausedFrame = nil
+            playerNode.play()
+            isPlaying = true
+            startDisplayTimer()
+            updateNowPlayingInfo()
+        } catch {
+            print("Resume failed: \(error)")
+        }
+    }
+
+    private func pause() {
+        pausedFrame = currentFrame               // capture the live position first
+        playerNode.pause()
+        isPlaying = false
+        stopDisplayTimer()
+        updateCurrentTime()
+        updateNowPlayingInfo()
     }
 
     // MARK: - Shuffle / repeat
@@ -294,9 +459,7 @@ final class PlayerEngine: ObservableObject {
         sleepTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(Double(minutes) * 60))
             guard let self, !Task.isCancelled else { return }
-            self.player?.pause()
-            self.isPlaying = false
-            self.updateNowPlayingInfo()
+            self.pause()
             self.sleepTimerMinutes = nil
             self.sleepTask = nil
         }
@@ -350,18 +513,6 @@ final class PlayerEngine: ObservableObject {
             Task { @MainActor in self?.seek(to: positionEvent.positionTime) }
             return .success
         }
-    }
-
-    private func resume() {
-        player?.play()
-        isPlaying = true
-        updateNowPlayingInfo()
-    }
-
-    private func pause() {
-        player?.pause()
-        isPlaying = false
-        updateNowPlayingInfo()
     }
 
     private func updateNowPlayingInfo() {

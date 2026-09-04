@@ -197,7 +197,7 @@ struct PlaylistDetailView: View {
     let playlistID: String
     @EnvironmentObject var playlists: PlaylistStore
     @EnvironmentObject var library: LibraryStore
-    @EnvironmentObject var player: PlayerEngine
+    @Environment(PlayerEngine.self) private var player
     @State private var showAddSongs = false
     @State private var showEditDetails = false
     @State private var sortMode: PlaylistSort = .custom
@@ -336,7 +336,7 @@ struct PlaylistDetailView: View {
             AddSongsView(playlistID: playlistID)
                 .environmentObject(playlists)
                 .environmentObject(library)
-                .environmentObject(player)
+                .environment(player)
         }
         .sheet(isPresented: $showEditDetails) {
             EditPlaylistDetailsView(playlistID: playlistID).environmentObject(playlists)

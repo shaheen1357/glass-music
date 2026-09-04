@@ -3,7 +3,7 @@ import MediaPlayer
 
 // MARK: - Mini player (docked above the tab bar)
 struct MiniPlayerView: View {
-    @EnvironmentObject var player: PlayerEngine
+    @Environment(PlayerEngine.self) private var player
     @Binding var showNowPlaying: Bool
 
     var body: some View {
@@ -62,7 +62,7 @@ struct MiniPlayerView: View {
 
 // MARK: - Full Now Playing screen
 struct NowPlayingView: View {
-    @EnvironmentObject var player: PlayerEngine
+    @Environment(PlayerEngine.self) private var player
     @EnvironmentObject var playlists: PlaylistStore
     @Binding var isPresented: Bool
 
@@ -98,7 +98,7 @@ struct NowPlayingView: View {
         }
         .sheet(isPresented: $showQueue) {
             QueueView()
-                .environmentObject(player)
+                .environment(player)
                 .environmentObject(playlists)
                 .presentationDetents([.medium, .large])
                 .presentationBackground(.ultraThinMaterial)
@@ -110,7 +110,7 @@ struct NowPlayingView: View {
         }
         .sheet(isPresented: $showLyrics) {
             if let t = player.currentTrack {
-                LyricsView(track: t).environmentObject(player)
+                LyricsView(track: t).environment(player)
                     .presentationDetents([.large])
                     .presentationBackground(.ultraThinMaterial)
             }
@@ -306,7 +306,7 @@ struct VolumeSlider: UIViewRepresentable {
 
 // MARK: - Queue (editable: reorder / remove / clear)
 struct QueueView: View {
-    @EnvironmentObject var player: PlayerEngine
+    @Environment(PlayerEngine.self) private var player
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {

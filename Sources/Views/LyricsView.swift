@@ -4,7 +4,7 @@ import SwiftUI
 /// + auto-scroll when timed lyrics exist, plain scroll otherwise.
 struct LyricsView: View {
     let track: Track
-    @EnvironmentObject var player: PlayerEngine
+    @Environment(PlayerEngine.self) private var player
     @Environment(\.dismiss) private var dismiss
 
     @State private var synced: [LyricLine] = []

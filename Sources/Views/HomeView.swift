@@ -3,7 +3,7 @@ import SwiftUI
 // Spotify-style content-first Home, Apple-Music aesthetic. No ads — your library.
 struct HomeView: View {
     @EnvironmentObject var library: LibraryStore
-    @EnvironmentObject var player: PlayerEngine
+    @Environment(PlayerEngine.self) private var player
     @EnvironmentObject var playlists: PlaylistStore
     @EnvironmentObject var stats: PlayStatsStore
 

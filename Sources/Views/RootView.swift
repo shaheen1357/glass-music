@@ -1,23 +1,18 @@
 import SwiftUI
 
 struct RootView: View {
-    @EnvironmentObject var player: PlayerEngine
+    @Environment(PlayerEngine.self) private var player
     @EnvironmentObject var playlists: PlaylistStore
     @State private var showNowPlaying = false
     @State private var selection = 0
-    @Namespace private var playerNS
 
     var body: some View {
         content
             .tint(Color.accentColor)
             .fullScreenCover(isPresented: $showNowPlaying) {
                 NowPlayingView(isPresented: $showNowPlaying)
-                    .environmentObject(player)
+                    .environment(player)
                     .environmentObject(playlists)
-                    // Apple-Music-style zoom out of the mini player. Works because
-                    // showNowPlaying is a plain @State (a $-synthesized binding);
-                    // a router/@Observable binding would break the zoom.
-                    .navigationTransition(.zoom(sourceID: "player", in: playerNS))
             }
     }
 
@@ -40,7 +35,6 @@ struct RootView: View {
             // (non-beta) iOS 26.1 API, and it hides the empty pill cleanly.
             tabs.tabViewBottomAccessory(isEnabled: hasTrack) {
                 MiniPlayerView(showNowPlaying: $showNowPlaying)
-                    .matchedTransitionSource(id: "player", in: playerNS)
             }
         } else if #available(iOS 26.0, *) {
             // 26.0 lacks isEnabled, but the content-only modifier is still applied
@@ -49,7 +43,6 @@ struct RootView: View {
             tabs.tabViewBottomAccessory {
                 if hasTrack {
                     MiniPlayerView(showNowPlaying: $showNowPlaying)
-                        .matchedTransitionSource(id: "player", in: playerNS)
                 }
             }
         } else {
@@ -60,7 +53,6 @@ struct RootView: View {
                         .overlay(alignment: .top) {
                             Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 0.5)
                         }
-                        .matchedTransitionSource(id: "player", in: playerNS)
                 }
             }
         }

@@ -2,7 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct SettingsView: View {
-    @EnvironmentObject var player: PlayerEngine
+    @Environment(PlayerEngine.self) private var player
     @EnvironmentObject var library: LibraryStore
     @Environment(\.dismiss) private var dismiss
     private let sleepChoices = [5, 10, 15, 30, 45, 60]

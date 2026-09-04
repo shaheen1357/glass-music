@@ -102,7 +102,7 @@ struct TrackActions: View {
     let track: Track
     var onPlay: (() -> Void)? = nil
     var onAddToPlaylist: () -> Void
-    @EnvironmentObject var player: PlayerEngine
+    @Environment(PlayerEngine.self) private var player
     @EnvironmentObject var playlists: PlaylistStore
 
     var body: some View {
@@ -150,7 +150,7 @@ struct TrackRow: View {
     let track: Track
     var showArtwork: Bool = true
     var onPlay: (() -> Void)? = nil
-    @EnvironmentObject var player: PlayerEngine
+    @Environment(PlayerEngine.self) private var player
     @EnvironmentObject var playlists: PlaylistStore
     @State private var showAdd = false
 
