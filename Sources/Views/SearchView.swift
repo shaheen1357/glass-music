@@ -1,20 +1,16 @@
 import SwiftUI
 
-private enum SearchRoute: Hashable {
-    case album(String)      // album id
-    case artist(String)     // artist name
-}
-
 struct SearchView: View {
     @EnvironmentObject var library: LibraryStore
     @Environment(PlayerEngine.self) private var player
     @EnvironmentObject var recents: RecentSearchStore
     @State private var query = ""
-    @State private var path = NavigationPath()
 
     private var trimmed: String { query.trimmingCharacters(in: .whitespaces) }
 
-    private var trackResults: [Track] {
+    // Songs only. Albums / artists / playlists each have their own scoped search
+    // inside their browse views; the global Search tab is for finding a song.
+    private var results: [Track] {
         let q = trimmed.lowercased()
         guard !q.isEmpty else { return [] }
         return library.tracks.filter {
@@ -22,24 +18,6 @@ struct SearchView: View {
             $0.artist.lowercased().contains(q) ||
             $0.album.lowercased().contains(q)
         }
-    }
-
-    private var albumResults: [Album] {
-        let q = trimmed.lowercased()
-        guard !q.isEmpty else { return [] }
-        return Array(library.albums.filter {
-            $0.title.lowercased().contains(q) || $0.artist.lowercased().contains(q)
-        }.prefix(8))
-    }
-
-    private var artistResults: [ArtistGroup] {
-        let q = trimmed.lowercased()
-        guard !q.isEmpty else { return [] }
-        return Array(library.artists.filter { $0.name.lowercased().contains(q) }.prefix(8))
-    }
-
-    private var noResults: Bool {
-        trackResults.isEmpty && albumResults.isEmpty && artistResults.isEmpty
     }
 
     private var resolvedRecents: [ResolvedRecent] { library.resolve(recents.items) }
@@ -60,11 +38,10 @@ struct SearchView: View {
     ]
 
     var body: some View {
-        NavigationStack(path: $path) {
+        NavigationStack {
             Group {
                 if !trimmed.isEmpty {
-                    if noResults { ContentUnavailableView.search(text: query) }
-                    else { resultsList }
+                    if results.isEmpty { ContentUnavailableView.search(text: query) } else { resultsList }
                 } else if !resolvedRecents.isEmpty {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 22) { recentSearches; browse }
@@ -75,77 +52,26 @@ struct SearchView: View {
                 }
             }
             .navigationTitle("Search")
-            .navigationDestination(for: SearchRoute.self) { route in
-                switch route {
-                case .album(let id):
-                    if let a = library.albums.first(where: { $0.id == id }) { AlbumDetailView(album: a) }
-                case .artist(let name):
-                    if let g = library.artists.first(where: { $0.name == name }) { ArtistDetailView(artist: g) }
-                }
-            }
-            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Artists, Songs, Albums")
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Songs")
             .onSubmit(of: .search) {
                 if !trimmed.isEmpty { recents.add(.query(text: trimmed)) }
             }
         }
     }
 
-    // MARK: - Results (Spotify-style: Artists / Albums / Songs)
     private var resultsList: some View {
         List {
-            if !artistResults.isEmpty {
-                Section("Artists") {
-                    ForEach(artistResults) { artist in
-                        Button {
-                            recents.add(.artist(name: artist.name))
-                            path.append(SearchRoute.artist(artist.name))
-                        } label: { entityRow(artwork: artist.tracks.first?.artworkData, artworkID: artist.id,
-                                             circular: true, title: artist.name, subtitle: "Artist") }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-            if !albumResults.isEmpty {
-                Section("Albums") {
-                    ForEach(albumResults) { album in
-                        Button {
-                            recents.add(.album(id: album.id))
-                            path.append(SearchRoute.album(album.id))
-                        } label: { entityRow(artwork: album.artworkData, artworkID: album.id,
-                                             circular: false, title: album.title, subtitle: "Album • \(album.artist)") }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-            if !trackResults.isEmpty {
-                Section("Songs") {
-                    ForEach(Array(trackResults.enumerated()), id: \.element.id) { index, track in
-                        TrackRow(track: track, onPlay: {
-                            player.play(tracks: trackResults, startAt: index)
-                            recents.add(.track(id: track.id))
-                        })
-                    }
-                }
+            ForEach(Array(results.enumerated()), id: \.element.id) { index, track in
+                TrackRow(track: track, onPlay: {
+                    player.play(tracks: results, startAt: index)
+                    recents.add(.track(id: track.id))
+                })
             }
         }
         .listStyle(.plain)
     }
 
-    private func entityRow(artwork: Data?, artworkID: String, circular: Bool,
-                           title: String, subtitle: String) -> some View {
-        HStack(spacing: 12) {
-            ArtworkView(id: artworkID, data: artwork, corner: circular ? 24 : 6)
-                .frame(width: 48, height: 48)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).lineLimit(1).foregroundStyle(.primary)
-                Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            }
-            Spacer()
-        }
-        .contentShape(Rectangle())
-    }
-
-    // MARK: - Recent searches (rich rows)
+    // MARK: - Recent searches (recently played songs + typed queries)
     private var recentSearches: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
@@ -185,10 +111,6 @@ struct SearchView: View {
         switch recent {
         case .track(let t):
             ArtworkView(id: t.id, data: t.artworkData, corner: 6).frame(width: 48, height: 48)
-        case .album(let a):
-            ArtworkView(id: a.id, data: a.artworkData, corner: 6).frame(width: 48, height: 48)
-        case .artist(let g):
-            ArtworkView(id: g.id, data: g.tracks.first?.artworkData, corner: 24).frame(width: 48, height: 48)
         case .query:
             Image(systemName: "clock.arrow.circlepath")
                 .foregroundStyle(.secondary).frame(width: 48, height: 48)
@@ -197,18 +119,14 @@ struct SearchView: View {
 
     private func recentTitle(_ r: ResolvedRecent) -> String {
         switch r {
-        case .track(let t):  return t.title
-        case .album(let a):  return a.title
-        case .artist(let g): return g.name
-        case .query(let q):  return q
+        case .track(let t): return t.title
+        case .query(let q): return q
         }
     }
 
     private func recentSubtitle(_ r: ResolvedRecent) -> String? {
         switch r {
         case .track(let t): return "Song • \(t.artist)"
-        case .album(let a): return "Album • \(a.artist)"
-        case .artist:       return "Artist"
         case .query:        return nil
         }
     }
@@ -218,12 +136,9 @@ struct SearchView: View {
         case .track(let t):
             player.play(tracks: [t], startAt: 0)
             recents.add(.track(id: t.id))
-        case .album(let a):
-            recents.add(.album(id: a.id)); path.append(SearchRoute.album(a.id))
-        case .artist(let g):
-            recents.add(.artist(name: g.name)); path.append(SearchRoute.artist(g.name))
         case .query(let q):
-            query = q; recents.add(.query(text: q))
+            query = q
+            recents.add(.query(text: q))
         }
     }
 

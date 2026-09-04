@@ -6,8 +6,6 @@ import Combine
 /// We store ids only (the library is the source of truth for title/art/etc.).
 enum RecentSearchItem: Codable, Hashable, Identifiable {
     case track(id: String)      // Track.id (== filename here)
-    case album(id: String)      // Album.id
-    case artist(name: String)   // ArtistGroup.name
     case query(text: String)    // free-text search
 
     /// Kind-prefixed identity for dedup + ForEach (a track id and a query that
@@ -15,8 +13,6 @@ enum RecentSearchItem: Codable, Hashable, Identifiable {
     var id: String {
         switch self {
         case .track(let id):    return "track:\(id)"
-        case .album(let id):    return "album:\(id)"
-        case .artist(let name): return "artist:\(name.lowercased())"
         case .query(let text):  return "query:\(text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())"
         }
     }
@@ -26,25 +22,12 @@ enum RecentSearchItem: Codable, Hashable, Identifiable {
 /// render time so it always reflects current metadata and skips deleted items.
 enum ResolvedRecent: Identifiable {
     case track(Track)
-    case album(Album)
-    case artist(ArtistGroup)
     case query(String)
 
     var id: String {
         switch self {
         case .track(let t):  return "track:\(t.id)"
-        case .album(let a):  return "album:\(a.id)"
-        case .artist(let g): return "artist:\(g.name.lowercased())"
         case .query(let q):  return "query:\(q.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())"
-        }
-    }
-
-    var recordItem: RecentSearchItem {
-        switch self {
-        case .track(let t):  return .track(id: t.id)
-        case .album(let a):  return .album(id: a.id)
-        case .artist(let g): return .artist(name: g.name)
-        case .query(let q):  return .query(text: q)
         }
     }
 }
