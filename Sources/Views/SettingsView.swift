@@ -38,11 +38,16 @@ struct SettingsView: View {
                     } label: {
                         Label("Equalizer", systemImage: "slider.vertical.3").foregroundStyle(.primary)
                     }
-                    comingSoon("Volume Normalization", "Even out loudness across tracks.")
+                    Toggle(isOn: Binding(
+                        get: { player.normalizationEnabled },
+                        set: { player.setNormalizationEnabled($0) }
+                    )) {
+                        Label("Volume Normalization", systemImage: "speaker.wave.2").foregroundStyle(.primary)
+                    }
                 } header: {
                     Text("Audio")
                 } footer: {
-                    Text("Equalizer is live. Volume normalization is next.")
+                    Text("Volume normalization learns each track's loudness the first time you play it, then evens it out from the next play on.")
                 }
 
                 Section("Library") {

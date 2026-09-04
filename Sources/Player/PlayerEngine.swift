@@ -21,11 +21,14 @@ final class PlayerEngine {
     var sleepTimerMinutes: Int? = nil
     var sleepAtTrackEnd = false
 
-    // MARK: Audio engine graph  (playerNode -> mainMixer -> output)
+    // MARK: Audio engine graph  (playerNode -> eq -> normGain -> mainMixer -> output)
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
     private var currentFormat: AVAudioFormat?
     private let eq = AVAudioUnitEQ(numberOfBands: 10)
+    // Per-track normalization gain. A 0-band EQ is just a globalGain node that can
+    // boost as well as attenuate (playerNode.volume can't exceed 1.0).
+    private let normGain = AVAudioUnitEQ(numberOfBands: 0)
 
     // MARK: EQ (user-facing state; tracked by @Observable so the UI reflects it)
     static let eqBandLabels = ["32 Hz", "64 Hz", "125 Hz", "250 Hz", "500 Hz", "1 kHz", "2 kHz", "4 kHz", "8 kHz", "16 kHz"]
@@ -45,6 +48,9 @@ final class PlayerEngine {
     ]
     private(set) var eqEnabled = false
     private(set) var eqGains: [Float] = Array(repeating: 0, count: 10)
+
+    // MARK: Volume normalization
+    private(set) var normalizationEnabled = false
 
     // MARK: Playback bookkeeping
     private var audioFile: AVAudioFile?
@@ -74,8 +80,10 @@ final class PlayerEngine {
     init() {
         engine.attach(playerNode)
         engine.attach(eq)
+        engine.attach(normGain)
         setupEQBands()
         loadEQSettings()
+        loadNormalizationSetting()
         configureSession()
         setupRemoteCommands()
     }
@@ -122,7 +130,8 @@ final class PlayerEngine {
     /// must be stopped before calling this.
     private func wire(_ format: AVAudioFormat) {
         engine.connect(playerNode, to: eq, format: format)
-        engine.connect(eq, to: engine.mainMixerNode, format: format)
+        engine.connect(eq, to: normGain, format: format)
+        engine.connect(normGain, to: engine.mainMixerNode, format: format)
     }
 
     private func connectGraph(format: AVAudioFormat) {
@@ -181,7 +190,7 @@ final class PlayerEngine {
         pausedFrame = currentFrame
         isPlaying = false
         stopDisplayTimer()
-        if let fmt = currentFormat { wire(fmt) }
+        if let fmt = currentFormat { wire(fmt); reapplyGraphParams() }
         needsReschedule = true
         updateNowPlayingInfo()
     }
@@ -193,7 +202,7 @@ final class PlayerEngine {
         let resumeFrame = min(max(0, AVAudioFramePosition(max(0, currentTime) * sampleRate)), audioLengthSamples)
         do {
             activateSession()
-            if let fmt = currentFormat { wire(fmt) }
+            if let fmt = currentFormat { wire(fmt); reapplyGraphParams() }
             try startEngineIfNeeded()
             playerNode.stop()
             seekFrame = resumeFrame
@@ -278,6 +287,7 @@ final class PlayerEngine {
             seekFrame = 0
             pausedFrame = nil
             connectGraph(format: file.processingFormat)
+            applyNormalization(for: track)      // set the per-track gain before we start
             try startEngineIfNeeded()
             scheduleSegment(from: 0)
             playerNode.play()
@@ -576,6 +586,44 @@ final class PlayerEngine {
             eqGains = g.map { Float($0) }
         }
         applyEQ()
+    }
+
+    // MARK: - Volume normalization
+    /// Set the normalization gain for a track. Uses the cached loudness
+    /// measurement if we have one; otherwise leaves the gain flat and analyzes in
+    /// the background so it's ready next time (avoids a mid-track gain jump).
+    private func applyNormalization(for track: Track) {
+        if normalizationEnabled, let g = LoudnessService.effectiveGain(for: track) {
+            normGain.globalGain = g
+        } else {
+            normGain.globalGain = 0
+        }
+        if normalizationEnabled, !LoudnessService.hasMeasurement(for: track) {
+            Task { await LoudnessService.analyzeAndCache(track) }
+        }
+    }
+
+    func setNormalizationEnabled(_ on: Bool) {
+        normalizationEnabled = on
+        UserDefaults.standard.set(on, forKey: "normalize.enabled")
+        // Takes effect from the next track so we never step the gain mid-playback
+        // (a sudden globalGain change on a live signal can pop). Warm the cache for
+        // the current track so it's normalized as soon as it comes round again.
+        if on, let track = currentTrack, !LoudnessService.hasMeasurement(for: track) {
+            Task { await LoudnessService.analyzeAndCache(track) }
+        }
+    }
+
+    private func loadNormalizationSetting() {
+        normalizationEnabled = UserDefaults.standard.bool(forKey: "normalize.enabled")
+    }
+
+    /// Re-push EQ + normalization gains after the graph is re-wired. A media-
+    /// services reset can rebuild the audio units at their defaults, so restore
+    /// the levels the current track should be playing at.
+    private func reapplyGraphParams() {
+        applyEQ()
+        if let track = currentTrack { applyNormalization(for: track) }
     }
 
     // MARK: - Now Playing info / remote commands

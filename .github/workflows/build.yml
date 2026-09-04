@@ -59,6 +59,14 @@ jobs:
             ONLY_ACTIVE_ARCH=NO \
             clean build
 
+      - name: Fix __LINKEDIT vmsize (re-signed dyld launch-crash workaround)
+        run: |
+          set -o pipefail
+          APP="build/Build/Products/Release-iphoneos/Music.app"
+          EXEC=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP/Info.plist")
+          echo "Patching $APP/$EXEC"
+          python3 scripts/fix_linkedit_vmsize.py "$APP/$EXEC"
+
       - name: Package unsigned IPA
         run: |
           APP_PATH="build/Build/Products/Release-iphoneos/Music.app"
