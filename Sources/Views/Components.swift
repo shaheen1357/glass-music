@@ -81,7 +81,14 @@ struct ArtworkView: View {
             // in new cells doesn't hitch, then cache for instant reuse.
             if ArtworkCache.shared.object(forKey: id as NSString) != nil { return }
             guard let data else { return }
-            let img = await Task.detached(priority: .userInitiated) { UIImage(data: data) }.value
+            // UIImage(data:) is LAZY — it defers the pixel decode to the main
+            // thread at draw time, which is the real scroll-jank source.
+            // preparingForDisplay() forces the full decode HERE, off the main
+            // thread, so drawing the cell is just a cheap blit.
+            let img = await Task.detached(priority: .userInitiated) { () -> UIImage? in
+                guard let raw = UIImage(data: data) else { return nil }
+                return raw.preparingForDisplay() ?? raw
+            }.value
             guard let img else { return }
             let cost = img.cgImage.map { $0.bytesPerRow * $0.height } ?? 0
             ArtworkCache.shared.setObject(img, forKey: id as NSString, cost: cost)
