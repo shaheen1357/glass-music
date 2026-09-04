@@ -86,7 +86,7 @@ struct HomeView: View {
             PlaylistCover(tracks: playlists.tracks(for: p, in: library), kind: p.kind,
                           corner: 0, coverData: p.coverImageData)
         case .album(let a):
-            ArtworkView(data: a.artworkData, corner: 0)
+            ArtworkView(id: a.id, data: a.artworkData, corner: 0)
         }
     }
 
@@ -117,7 +117,7 @@ struct HomeView: View {
                     ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
                         Button { player.play(tracks: tracks, startAt: index) } label: {
                             VStack(alignment: .leading, spacing: 6) {
-                                ArtworkView(data: track.artworkData, corner: 8).frame(width: tile, height: tile)
+                                ArtworkView(id: track.id, data: track.artworkData, corner: 8).frame(width: tile, height: tile)
                                 Text(track.title).font(.subheadline).lineLimit(1).frame(width: tile, alignment: .leading)
                                 Text(track.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1).frame(width: tile, alignment: .leading)
                             }
@@ -138,7 +138,7 @@ struct HomeView: View {
                     ForEach(albums) { album in
                         NavigationLink { AlbumDetailView(album: album) } label: {
                             VStack(alignment: .leading, spacing: 6) {
-                                ArtworkView(data: album.artworkData, corner: 8).frame(width: tile, height: tile)
+                                ArtworkView(id: album.id, data: album.artworkData, corner: 8).frame(width: tile, height: tile)
                                 Text(album.title).font(.subheadline).lineLimit(1).frame(width: tile, alignment: .leading)
                                 Text(album.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1).frame(width: tile, alignment: .leading)
                             }

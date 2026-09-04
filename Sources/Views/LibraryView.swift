@@ -203,7 +203,7 @@ struct LibraryView: View {
                     ForEach(displayedAlbums) { album in
                         NavigationLink { AlbumDetailView(album: album) } label: {
                             VStack(alignment: .leading, spacing: 6) {
-                                ArtworkView(data: album.artworkData, corner: 8).aspectRatio(1, contentMode: .fit)
+                                ArtworkView(id: album.id, data: album.artworkData, corner: 8).aspectRatio(1, contentMode: .fit)
                                 Text(album.title).font(.subheadline).lineLimit(1)
                                 Text(album.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             }
@@ -218,7 +218,7 @@ struct LibraryView: View {
                 ForEach(displayedAlbums) { album in
                     NavigationLink { AlbumDetailView(album: album) } label: {
                         HStack(spacing: 12) {
-                            ArtworkView(data: album.artworkData, corner: 6).frame(width: 56, height: 56)
+                            ArtworkView(id: album.id, data: album.artworkData, corner: 6).frame(width: 56, height: 56)
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(album.title).lineLimit(1)
                                 Text(album.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -350,7 +350,7 @@ struct AlbumsView: View {
                 ForEach(displayed) { album in
                     NavigationLink { AlbumDetailView(album: album) } label: {
                         VStack(alignment: .leading, spacing: 6) {
-                            ArtworkView(data: album.artworkData, corner: 8).aspectRatio(1, contentMode: .fit)
+                            ArtworkView(id: album.id, data: album.artworkData, corner: 8).aspectRatio(1, contentMode: .fit)
                             Text(album.title).font(.subheadline).foregroundStyle(.primary).lineLimit(1)
                             Text(album.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                         }
@@ -378,7 +378,7 @@ struct AlbumDetailView: View {
         List {
             Section {
                 VStack(spacing: 14) {
-                    ArtworkView(data: album.artworkData, corner: 12)
+                    ArtworkView(id: album.id, data: album.artworkData, corner: 12)
                         .frame(width: 220, height: 220)
                         .shadow(color: .black.opacity(0.2), radius: 12, y: 6)
                     VStack(spacing: 4) {

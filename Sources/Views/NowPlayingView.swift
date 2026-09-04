@@ -16,7 +16,7 @@ struct MiniPlayerView: View {
             HStack(spacing: 12) {
                 Button { showNowPlaying = true } label: {
                     HStack(spacing: 12) {
-                        ArtworkView(data: track.artworkData, corner: 6)
+                        ArtworkView(id: track.id, data: track.artworkData, corner: 6)
                             .frame(width: 42, height: 42)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(track.title).font(.subheadline.weight(.medium)).lineLimit(1)
@@ -175,7 +175,7 @@ struct NowPlayingView: View {
     }
 
     private var artwork: some View {
-        ArtworkView(data: player.currentTrack?.artworkData, corner: 16)
+        ArtworkView(id: player.currentTrack?.id ?? "np", data: player.currentTrack?.artworkData, corner: 16)
             .aspectRatio(1, contentMode: .fit)
             .frame(maxWidth: 300, maxHeight: 300)
             .scaleEffect(player.isPlaying ? 1.0 : 0.86)

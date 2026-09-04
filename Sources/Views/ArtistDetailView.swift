@@ -7,7 +7,7 @@ struct ArtistDetailView: View {
     private var albums: [Album] {
         let byAlbum = Dictionary(grouping: artist.tracks) { $0.album }
         return byAlbum.map { title, tracks in
-            Album(id: "\(artist.name)\u{1}\(title)", title: title, artist: artist.name,
+            Album(id: "\(title)\u{1}\(artist.name)", title: title, artist: artist.name,
                   tracks: tracks.sorted {
                       if $0.trackNumber != $1.trackNumber { return $0.trackNumber < $1.trackNumber }
                       return $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
@@ -45,7 +45,7 @@ struct ArtistDetailView: View {
                             ForEach(albums) { album in
                                 NavigationLink { AlbumDetailView(album: album) } label: {
                                     VStack(alignment: .leading, spacing: 6) {
-                                        ArtworkView(data: album.artworkData, corner: 8)
+                                        ArtworkView(id: album.id, data: album.artworkData, corner: 8)
                                             .frame(width: 130, height: 130)
                                         Text(album.title).font(.subheadline).lineLimit(1)
                                             .frame(width: 130, alignment: .leading)

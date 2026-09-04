@@ -35,15 +35,32 @@ func totalTimeString(_ seconds: Double) -> String {
 func songCountString(_ n: Int) -> String { n == 1 ? "1 song" : "\(n) songs" }
 
 // MARK: - Artwork
+/// Process-wide cache of decoded artwork, keyed by a stable id (track/album id).
+enum ArtworkCache {
+    static let shared: NSCache<NSString, UIImage> = {
+        let c = NSCache<NSString, UIImage>()
+        c.totalCostLimit = 64 * 1024 * 1024   // ~64 MB of decoded bitmaps, not a raw count
+        return c
+    }()
+}
+
 struct ArtworkView: View {
+    let id: String
     let data: Data?
     var corner: CGFloat = 8
-    @State private var image: UIImage?
+    @State private var decoded: UIImage?
+
+    // Synchronous read: a cache hit returns instantly, so re-renders (incl. the
+    // 5Hz playback ticks) never flash to the placeholder. Falls back to the
+    // last off-main decode, else nil -> placeholder.
+    private var displayImage: UIImage? {
+        ArtworkCache.shared.object(forKey: id as NSString) ?? decoded
+    }
 
     var body: some View {
         Group {
-            if let image {
-                Image(uiImage: image).resizable().aspectRatio(contentMode: .fill)
+            if let ui = displayImage {
+                Image(uiImage: ui).resizable().aspectRatio(contentMode: .fill)
             } else {
                 ZStack {
                     LinearGradient(colors: [Color(.systemGray4), Color(.systemGray5)],
@@ -59,11 +76,16 @@ struct ArtworkView: View {
             RoundedRectangle(cornerRadius: corner, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.5)
         )
-        .task(id: data) {
-            // Decode only when the artwork data changes (cell scrolls in /
-            // recycles) — not on every body re-eval, which fires 5x/sec while
-            // a track plays and was re-decoding the JPEG each time.
-            image = data.flatMap { UIImage(data: $0) }
+        .task(id: id) {
+            // Only work on a cache miss; decode off the main thread so scrolling
+            // in new cells doesn't hitch, then cache for instant reuse.
+            if ArtworkCache.shared.object(forKey: id as NSString) != nil { return }
+            guard let data else { return }
+            let img = await Task.detached(priority: .userInitiated) { UIImage(data: data) }.value
+            guard let img else { return }
+            let cost = img.cgImage.map { $0.bytesPerRow * $0.height } ?? 0
+            ArtworkCache.shared.setObject(img, forKey: id as NSString, cost: cost)
+            decoded = img
         }
     }
 }
@@ -132,7 +154,7 @@ struct TrackRow: View {
             Button { onPlay?() } label: {
                 HStack(spacing: 12) {
                     if showArtwork {
-                        ArtworkView(data: track.artworkData, corner: 6).frame(width: 48, height: 48)
+                        ArtworkView(id: track.id, data: track.artworkData, corner: 6).frame(width: 48, height: 48)
                     }
                     VStack(alignment: .leading, spacing: 2) {
                         Text(track.title)
@@ -195,7 +217,7 @@ struct RecentlyAddedGrid: View {
             ForEach(albums) { album in
                 NavigationLink { AlbumDetailView(album: album) } label: {
                     VStack(alignment: .leading, spacing: 6) {
-                        ArtworkView(data: album.artworkData, corner: 8).aspectRatio(1, contentMode: .fit)
+                        ArtworkView(id: album.id, data: album.artworkData, corner: 8).aspectRatio(1, contentMode: .fit)
                         Text(album.title).font(.subheadline).foregroundStyle(.primary).lineLimit(1)
                         Text(album.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }

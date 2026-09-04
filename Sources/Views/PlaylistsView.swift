@@ -50,25 +50,25 @@ struct PlaylistCover: View {
     }
 
     @ViewBuilder private var mosaic: some View {
-        let arts = Array(tracks.prefix(4)).map { $0.artworkData }
-        if arts.isEmpty || arts.allSatisfy({ $0 == nil }) {
+        let items = Array(tracks.prefix(4))
+        if items.isEmpty || items.allSatisfy({ $0.artworkData == nil }) {
             ZStack {
                 Color(.systemGray5)
                 Image(systemName: "music.note.list").font(.title2).foregroundStyle(.secondary)
             }
-        } else if arts.count < 4 {
-            ArtworkView(data: arts.first ?? nil, corner: 0)
+        } else if items.count < 4 {
+            ArtworkView(id: items[0].id, data: items[0].artworkData, corner: 0)
         } else {
             GeometryReader { geo in
                 let s = geo.size.width / 2
                 VStack(spacing: 0) {
                     HStack(spacing: 0) {
-                        ArtworkView(data: arts[0], corner: 0).frame(width: s, height: s)
-                        ArtworkView(data: arts[1], corner: 0).frame(width: s, height: s)
+                        ArtworkView(id: items[0].id, data: items[0].artworkData, corner: 0).frame(width: s, height: s)
+                        ArtworkView(id: items[1].id, data: items[1].artworkData, corner: 0).frame(width: s, height: s)
                     }
                     HStack(spacing: 0) {
-                        ArtworkView(data: arts[2], corner: 0).frame(width: s, height: s)
-                        ArtworkView(data: arts[3], corner: 0).frame(width: s, height: s)
+                        ArtworkView(id: items[2].id, data: items[2].artworkData, corner: 0).frame(width: s, height: s)
+                        ArtworkView(id: items[3].id, data: items[3].artworkData, corner: 0).frame(width: s, height: s)
                     }
                 }
             }
@@ -278,7 +278,7 @@ struct PlaylistDetailView: View {
                 Section {
                     ForEach(suggestions) { track in
                         HStack(spacing: 12) {
-                            ArtworkView(data: track.artworkData, corner: 6).frame(width: 44, height: 44)
+                            ArtworkView(id: track.id, data: track.artworkData, corner: 6).frame(width: 44, height: 44)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(track.title).lineLimit(1)
                                 Text(track.artist).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
@@ -464,7 +464,7 @@ struct AddSongsView: View {
                     justAdded.insert(track.id)
                 } label: {
                     HStack(spacing: 12) {
-                        ArtworkView(data: track.artworkData, corner: 6).frame(width: 44, height: 44)
+                        ArtworkView(id: track.id, data: track.artworkData, corner: 6).frame(width: 44, height: 44)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(track.title).lineLimit(1).foregroundStyle(.primary)
                             Text(track.artist).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
