@@ -38,11 +38,12 @@ func songCountString(_ n: Int) -> String { n == 1 ? "1 song" : "\(n) songs" }
 struct ArtworkView: View {
     let data: Data?
     var corner: CGFloat = 8
+    @State private var image: UIImage?
 
     var body: some View {
         Group {
-            if let data, let ui = UIImage(data: data) {
-                Image(uiImage: ui).resizable().aspectRatio(contentMode: .fill)
+            if let image {
+                Image(uiImage: image).resizable().aspectRatio(contentMode: .fill)
             } else {
                 ZStack {
                     LinearGradient(colors: [Color(.systemGray4), Color(.systemGray5)],
@@ -58,6 +59,12 @@ struct ArtworkView: View {
             RoundedRectangle(cornerRadius: corner, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.5)
         )
+        .task(id: data) {
+            // Decode only when the artwork data changes (cell scrolls in /
+            // recycles) — not on every body re-eval, which fires 5x/sec while
+            // a track plays and was re-decoding the JPEG each time.
+            image = data.flatMap { UIImage(data: $0) }
+        }
     }
 }
 

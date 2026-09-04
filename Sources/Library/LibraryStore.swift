@@ -6,6 +6,7 @@ import Combine
 @MainActor
 final class LibraryStore: ObservableObject {
     @Published private(set) var tracks: [Track] = []
+    @Published private(set) var tracksByID: [String: Track] = [:]
     @Published private(set) var albums: [Album] = []
     @Published private(set) var artists: [ArtistGroup] = []
     @Published private(set) var isScanning = false
@@ -195,6 +196,7 @@ final class LibraryStore: ObservableObject {
 
     // MARK: - Collections
     private func rebuildCollections() {
+        tracksByID = Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let byAlbum = Dictionary(grouping: tracks) { "\($0.album)\u{1}\($0.artist)" }
         albums = byAlbum.map { key, group in
             let sorted = group.sorted {

@@ -212,7 +212,8 @@ final class PlaylistStore: ObservableObject {
 
     // MARK: - Resolve
     func tracks(for playlist: Playlist, in library: LibraryStore) -> [Track] {
-        let map = Dictionary(library.tracks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        return playlist.trackIDs.compactMap { map[$0] }
+        // O(k) lookup against the library's prebuilt id->Track map (rebuilt only
+        // on scan), instead of rebuilding a whole-library dictionary per call.
+        playlist.trackIDs.compactMap { library.tracksByID[$0] }
     }
 }

@@ -33,16 +33,24 @@ struct RootView: View {
 
     @ViewBuilder private var content: some View {
         let hasTrack = player.currentTrack != nil
-        if #available(iOS 26.0, *) {
-            // Only attach the accessory when something is playing, otherwise
-            // iOS 26 shows an empty glass pill above the tab bar.
-            if hasTrack {
-                tabs.tabViewBottomAccessory {
+        if #available(iOS 26.1, *) {
+            // Modifier is ALWAYS applied; only the Bool changes, so the TabView
+            // keeps its structural identity — no rebuild. Playing the first song
+            // no longer resets your tab / open playlist. isEnabled: is a shipping
+            // (non-beta) iOS 26.1 API, and it hides the empty pill cleanly.
+            tabs.tabViewBottomAccessory(isEnabled: hasTrack) {
+                MiniPlayerView(showNowPlaying: $showNowPlaying)
+                    .matchedTransitionSource(id: "player", in: playerNS)
+            }
+        } else if #available(iOS 26.0, *) {
+            // 26.0 lacks isEnabled, but the content-only modifier is still applied
+            // unconditionally here (the check is INSIDE), so identity stays stable
+            // and empty content hides cleanly on 26.0.
+            tabs.tabViewBottomAccessory {
+                if hasTrack {
                     MiniPlayerView(showNowPlaying: $showNowPlaying)
                         .matchedTransitionSource(id: "player", in: playerNS)
                 }
-            } else {
-                tabs
             }
         } else {
             tabs.safeAreaInset(edge: .bottom, spacing: 0) {
