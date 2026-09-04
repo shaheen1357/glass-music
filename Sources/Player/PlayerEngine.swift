@@ -1,7 +1,6 @@
 import Foundation
 import AVFoundation
 import MediaPlayer
-import Combine
 import UIKit
 import Observation
 
@@ -35,6 +34,7 @@ final class PlayerEngine {
     private var pausedFrame: AVAudioFramePosition?         // frozen playhead while paused
     private var scheduleGeneration = 0                     // guards stale completion callbacks
     private var isSuspended = false                        // true across interruption / device-loss
+    private var needsReschedule = false                    // set after a media-services reset
     private var displayTimer: Timer?
 
     private var originalQueue: [Track] = []
@@ -154,12 +154,15 @@ final class PlayerEngine {
         isPlaying = false
         stopDisplayTimer()
         if let fmt = currentFormat { engine.connect(playerNode, to: engine.mainMixerNode, format: fmt) }
+        needsReschedule = true
         updateNowPlayingInfo()
     }
 
     private func restartAndResume() {
-        guard audioFile != nil else { return }
-        let resumeFrame = currentFrame
+        guard audioFile != nil, sampleRate > 0 else { return }
+        // currentTime is the last position the timer published; the render clock
+        // may already be gone by the time a config-change notification arrives.
+        let resumeFrame = min(max(0, AVAudioFramePosition(max(0, currentTime) * sampleRate)), audioLengthSamples)
         do {
             activateSession()
             if let fmt = currentFormat { engine.connect(playerNode, to: engine.mainMixerNode, format: fmt) }
@@ -228,13 +231,22 @@ final class PlayerEngine {
         guard let track = currentTrack else { return }
         onPlay?(track)
         isSuspended = false
-        playerNode.stop()                       // fires a stale completion (ignored via generation)
+        needsReschedule = false
+        playerNode.stop()                       // fires a stale completion...
+        scheduleGeneration &+= 1                // ...neutralize it even if the load below fails
 
         do {
             let file = try AVAudioFile(forReading: track.url)
             audioFile = file
             sampleRate = file.processingFormat.sampleRate
             audioLengthSamples = file.length
+            // #3: a zero-length/degenerate file would "play" forever (no completion) — bail.
+            guard audioLengthSamples > 0 else {
+                audioFile = nil
+                isPlaying = false
+                stopDisplayTimer()
+                return
+            }
             seekFrame = 0
             pausedFrame = nil
             connectGraph(format: file.processingFormat)
@@ -336,10 +348,10 @@ final class PlayerEngine {
     }
 
     func seek(to seconds: Double) {
-        guard audioFile != nil, sampleRate > 0 else { return }
+        guard audioFile != nil, sampleRate > 0, seconds.isFinite else { return }
         let wasPlaying = isPlaying
-        var target = AVAudioFramePosition(max(0, seconds) * sampleRate)
-        target = max(0, min(target, audioLengthSamples))
+        let clamped = max(0, min(seconds, Double(audioLengthSamples) / sampleRate))
+        let target = min(AVAudioFramePosition(clamped * sampleRate), audioLengthSamples)
         seekFrame = target
         currentTime = Double(target) / sampleRate
 
@@ -367,6 +379,13 @@ final class PlayerEngine {
         do {
             activateSession()
             try startEngineIfNeeded()
+            if needsReschedule {
+                needsReschedule = false
+                let frame = pausedFrame ?? currentFrame
+                playerNode.stop()
+                seekFrame = frame
+                scheduleSegment(from: frame)
+            }
             pausedFrame = nil
             playerNode.play()
             isPlaying = true
