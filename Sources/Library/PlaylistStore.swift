@@ -178,9 +178,9 @@ final class PlaylistStore: ObservableObject {
         }
     }
 
-    func addTrackIDs(_ ids: [String], to playlistID: String) {
+    func addTrackIDs(_ ids: [String], to playlistID: String, allowDuplicates: Bool = false) {
         guard let index = playlists.firstIndex(where: { $0.id == playlistID }) else { return }
-        for id in ids where !playlists[index].trackIDs.contains(id) {
+        for id in ids where allowDuplicates || !playlists[index].trackIDs.contains(id) {
             playlists[index].trackIDs.append(id)
         }
         save()

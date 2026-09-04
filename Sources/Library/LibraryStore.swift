@@ -66,6 +66,7 @@ final class LibraryStore: ObservableObject {
         var trackNumber = 0
         var duration: Double = 0
         var artworkData: Data?
+        var lyrics: String?
         var dateAdded = Date.distantPast
 
         if let values = try? url.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey]) {
@@ -106,6 +107,7 @@ final class LibraryStore: ObservableObject {
             if let a = tags.artist, !a.isEmpty { artist = a }
             if let al = tags.album, !al.isEmpty { album = al }
             if let n = tags.trackNumber { trackNumber = n }
+            if let ly = tags.lyrics, !ly.isEmpty { lyrics = ly }
             if artworkData == nil, let pic = tags.artwork { artworkData = Self.thumbnail(from: pic) }
         }
 
@@ -128,7 +130,8 @@ final class LibraryStore: ObservableObject {
             trackNumber: trackNumber,
             duration: duration,
             artworkData: artworkData,
-            dateAdded: dateAdded
+            dateAdded: dateAdded,
+            lyrics: lyrics
         )
     }
 
@@ -227,19 +230,35 @@ final class LibraryStore: ObservableObject {
             let scoped = source.startAccessingSecurityScopedResource()
             defer { if scoped { source.stopAccessingSecurityScopedResource() } }
 
-            let destination = documentsURL.appendingPathComponent(source.lastPathComponent)
-            do {
-                if fm.fileExists(atPath: destination.path) {
-                    try? fm.removeItem(at: destination)
+            var isDir: ObjCBool = false
+            if fm.fileExists(atPath: source.path, isDirectory: &isDir), isDir.boolValue {
+                // Folder: import every audio file inside it (recursively).
+                if let en = fm.enumerator(at: source, includingPropertiesForKeys: nil,
+                                          options: [.skipsHiddenFiles]) {
+                    for case let file as URL in en
+                    where audioExtensions.contains(file.pathExtension.lowercased()) {
+                        if let id = copyIntoLibrary(file) { importedIDs.append(id) }
+                    }
                 }
-                try fm.copyItem(at: source, to: destination)
-                importedIDs.append(destination.path)
-            } catch {
-                print("Import failed for \(source.lastPathComponent): \(error)")
+            } else if audioExtensions.contains(source.pathExtension.lowercased()) {
+                if let id = copyIntoLibrary(source) { importedIDs.append(id) }
             }
         }
         Task { await scan() }
         return importedIDs
+    }
+
+    private func copyIntoLibrary(_ source: URL) -> String? {
+        let fm = FileManager.default
+        let destination = documentsURL.appendingPathComponent(source.lastPathComponent)
+        do {
+            if fm.fileExists(atPath: destination.path) { try? fm.removeItem(at: destination) }
+            try fm.copyItem(at: source, to: destination)
+            return destination.path
+        } catch {
+            print("Import failed for \(source.lastPathComponent): \(error)")
+            return nil
+        }
     }
 
     func delete(_ track: Track) {

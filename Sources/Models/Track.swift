@@ -11,6 +11,7 @@ struct Track: Identifiable, Hashable {
     var duration: Double
     var artworkData: Data?
     var dateAdded: Date
+    var lyrics: String? = nil
 
     var artwork: UIImage? {
         guard let artworkData else { return nil }

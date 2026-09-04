@@ -15,6 +15,7 @@ enum FLACMetadata {
         var album: String?
         var trackNumber: Int?
         var artwork: Data?
+        var lyrics: String?
     }
 
     static func read(url: URL) -> Tags? {
@@ -80,6 +81,8 @@ enum FLACMetadata {
             case "TRACKNUMBER":
                 let num = value.split(separator: "/").first.map(String.init) ?? value
                 tags.trackNumber = Int(num.trimmingCharacters(in: .whitespaces))
+            case "LYRICS", "UNSYNCEDLYRICS", "UNSYNCED LYRICS":
+                if tags.lyrics == nil { tags.lyrics = value }
             default: break
             }
         }

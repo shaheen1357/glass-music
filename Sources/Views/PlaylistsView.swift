@@ -184,7 +184,7 @@ struct PlaylistsView: View {
     }
 
     private func subtitle(_ playlist: Playlist) -> String {
-        let n = playlist.trackIDs.count
+        let n = playlists.tracks(for: playlist, in: library).count
         switch playlist.kind {
         case .podcasts: return n == 1 ? "1 episode" : "\(n) episodes"
         default: return "Playlist · " + (n == 1 ? "1 song" : "\(n) songs")
@@ -333,11 +333,11 @@ struct PlaylistDetailView: View {
             EditPlaylistDetailsView(playlistID: playlistID).environmentObject(playlists)
         }
         .fileImporter(isPresented: $showImportSongs,
-                      allowedContentTypes: [.audio, .mp3, .mpeg4Audio, .wav, .aiff],
+                      allowedContentTypes: [.folder, .audio, .mp3, .mpeg4Audio, .wav, .aiff],
                       allowsMultipleSelection: true) { result in
             if case .success(let urls) = result {
                 let ids = library.importFiles(urls)
-                playlists.addTrackIDs(ids, to: playlistID)
+                playlists.addTrackIDs(ids, to: playlistID, allowDuplicates: true)
             }
         }
         .alert("Exported", isPresented: $showExported) {

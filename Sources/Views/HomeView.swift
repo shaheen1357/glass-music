@@ -21,9 +21,8 @@ struct HomeView: View {
     }
 
     private var quickItems: [QuickItem] {
-        var items: [QuickItem] = playlists.orderedPlaylists.prefix(4).map { .playlist($0) }
-        items += library.albums.sorted { $0.dateAdded > $1.dateAdded }.prefix(4).map { .album($0) }
-        return Array(items.prefix(8))
+        // Quick-access grid is playlists only (albums/songs live in the shelves below).
+        playlists.orderedPlaylists.prefix(6).map { .playlist($0) }
     }
 
     var body: some View {

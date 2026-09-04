@@ -59,16 +59,15 @@ struct LyricsView: View {
         return idx
     }
 
+    private var plainLyrics: String? {
+        let t = track.lyrics?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (t?.isEmpty == false) ? t : nil
+    }
+
     var body: some View {
         NavigationStack {
             Group {
-                if lines.isEmpty {
-                    ContentUnavailableView(
-                        "No Lyrics",
-                        systemImage: "quote.bubble",
-                        description: Text("Add a .lrc file with the same name next to the track for synced lyrics.")
-                    )
-                } else {
+                if !lines.isEmpty {
                     ScrollViewReader { proxy in
                         ScrollView {
                             VStack(alignment: .leading, spacing: 14) {
@@ -87,12 +86,32 @@ struct LyricsView: View {
                             if let newValue { withAnimation { proxy.scrollTo(newValue, anchor: .center) } }
                         }
                     }
+                } else if let plain = plainLyrics {
+                    ScrollView {
+                        Text(plain)
+                            .font(.title3)
+                            .foregroundStyle(.primary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding()
+                            .textSelection(.enabled)
+                    }
+                } else {
+                    ContentUnavailableView(
+                        "No Lyrics",
+                        systemImage: "quote.bubble",
+                        description: Text("Add a .lrc file next to the track, or embed lyrics in the file's tags.")
+                    )
                 }
             }
             .navigationTitle("Lyrics")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
         }
-        .onAppear { lines = LyricsLoader.load(for: track) }
+        .onAppear {
+            lines = LyricsLoader.load(for: track)
+            if lines.isEmpty, let embedded = track.lyrics {
+                lines = LyricsLoader.parse(embedded)   // embedded lyrics may be LRC-timed
+            }
+        }
     }
 }
