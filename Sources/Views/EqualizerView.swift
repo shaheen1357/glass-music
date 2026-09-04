@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Interactive frequency-response EQ: drag the glowing curve to bend each of the
-/// 10 bands. Dark "studio" aesthetic so the accent curve dazzles.
+/// Interactive frequency-response EQ — drag the curve to bend each of the 10
+/// bands. Styled to match the app: adaptive light/dark + glass cards.
 struct EqualizerView: View {
     @Environment(PlayerEngine.self) private var player
     private let curveHeight: CGFloat = 260
@@ -9,48 +9,40 @@ struct EqualizerView: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 20) {
+            VStack(spacing: 18) {
                 toggleCard
                 curvePanel
                 presetRow
                 Text("Drag the curve to shape a band · pick a preset to start")
-                    .font(.caption2).foregroundStyle(.white.opacity(0.4))
+                    .font(.caption2).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity)
             }
             .padding(16)
         }
-        .background(backdrop)
-        .preferredColorScheme(.dark)
+        .background(
+            LinearGradient(colors: [Color(.systemBackground), Color(.secondarySystemBackground)],
+                           startPoint: .top, endPoint: .bottom).ignoresSafeArea()
+        )
         .navigationTitle("Equalizer")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Flat") { player.applyEQPreset(Array(repeating: 0, count: 10)) }
-                    .tint(.white)
             }
         }
     }
 
-    // MARK: Backdrop
-    private var backdrop: some View {
-        LinearGradient(colors: [Color(red: 0.05, green: 0.05, blue: 0.09),
-                                Color(red: 0.10, green: 0.07, blue: 0.14)],
-                       startPoint: .top, endPoint: .bottom)
-            .ignoresSafeArea()
-    }
-
-    // MARK: Enable toggle
     private var toggleCard: some View {
         Toggle(isOn: Binding(get: { player.eqEnabled }, set: { player.setEQEnabled($0) })) {
-            Label("Equalizer", systemImage: "slider.vertical.3")
-                .font(.headline).foregroundStyle(.white)
+            Label("Equalizer", systemImage: "slider.vertical.3").font(.headline)
         }
         .tint(.accentColor)
         .padding(14)
-        .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.5))
     }
 
-    // MARK: The interactive curve
     private var curvePanel: some View {
         VStack(spacing: 8) {
             GeometryReader { geo in
@@ -60,18 +52,18 @@ struct EqualizerView: View {
                 ZStack {
                     grid(size)
                     fillPath(pts, size).fill(
-                        LinearGradient(colors: [Color.accentColor.opacity(0.40),
+                        LinearGradient(colors: [Color.accentColor.opacity(0.32),
                                                 Color.accentColor.opacity(0.02)],
                                        startPoint: .top, endPoint: .bottom))
                     smoothPath(pts).stroke(
                         Color.accentColor,
                         style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
-                        .shadow(color: Color.accentColor.opacity(0.7), radius: 8)
+                        .shadow(color: Color.accentColor.opacity(0.5), radius: 6)
                     ForEach(pts.indices, id: \.self) { i in
-                        Circle().fill(.white)
-                            .frame(width: 11, height: 11)
-                            .overlay(Circle().stroke(Color.accentColor, lineWidth: 2))
-                            .shadow(color: Color.accentColor.opacity(0.6), radius: 3)
+                        Circle().fill(Color(.systemBackground))
+                            .frame(width: 12, height: 12)
+                            .overlay(Circle().stroke(Color.accentColor, lineWidth: 2.5))
+                            .shadow(color: Color.accentColor.opacity(0.35), radius: 2)
                             .position(pts[i])
                     }
                 }
@@ -90,24 +82,22 @@ struct EqualizerView: View {
                 )
             }
             .frame(height: curveHeight)
-            .opacity(player.eqEnabled ? 1 : 0.4)
+            .opacity(player.eqEnabled ? 1 : 0.45)
 
-            // frequency axis (subset to avoid crowding)
             HStack {
                 ForEach(["32", "125", "500", "2k", "8k", "16k"], id: \.self) { f in
-                    Text(f).font(.caption2).foregroundStyle(.white.opacity(0.4))
+                    Text(f).font(.caption2).foregroundStyle(.secondary)
                     if f != "16k" { Spacer() }
                 }
             }
             .padding(.horizontal, 10)
         }
         .padding(14)
-        .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
-            .strokeBorder(.white.opacity(0.06), lineWidth: 0.5))
+            .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.5))
     }
 
-    // MARK: Presets
     private var presetRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
@@ -115,10 +105,10 @@ struct EqualizerView: View {
                     Button { player.applyEQPreset(preset.gains) } label: {
                         Text(preset.name)
                             .font(.subheadline.weight(.medium))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(.primary)
                             .padding(.horizontal, 16).padding(.vertical, 9)
-                            .background(.white.opacity(0.08), in: Capsule())
-                            .overlay(Capsule().strokeBorder(.white.opacity(0.10), lineWidth: 0.5))
+                            .background(.ultraThinMaterial, in: Capsule())
+                            .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5))
                     }
                     .buttonStyle(.plain)
                 }
@@ -132,7 +122,7 @@ struct EqualizerView: View {
         let usable = size.width - 2 * pad
         return (0..<player.eqGains.count).map { i in
             let x = pad + usable * CGFloat(i) / CGFloat(player.eqGains.count - 1)
-            let norm = (player.eqGains[i] + range) / (2 * range)   // 0...1
+            let norm = (player.eqGains[i] + range) / (2 * range)
             let y = size.height * (1 - CGFloat(norm))
             return CGPoint(x: x, y: y)
         }
@@ -166,17 +156,15 @@ struct EqualizerView: View {
 
     private func grid(_ size: CGSize) -> some View {
         ZStack {
-            // 0 dB center line
             Path { p in
                 p.move(to: CGPoint(x: 0, y: size.height / 2))
                 p.addLine(to: CGPoint(x: size.width, y: size.height / 2))
-            }.stroke(.white.opacity(0.18), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
-            // ±6 dB guides
+            }.stroke(Color.primary.opacity(0.15), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
             ForEach([0.25, 0.75], id: \.self) { frac in
                 Path { p in
                     p.move(to: CGPoint(x: 0, y: size.height * frac))
                     p.addLine(to: CGPoint(x: size.width, y: size.height * frac))
-                }.stroke(.white.opacity(0.06), lineWidth: 1)
+                }.stroke(Color.primary.opacity(0.06), lineWidth: 1)
             }
         }
     }

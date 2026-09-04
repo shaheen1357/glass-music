@@ -20,7 +20,6 @@ struct LibraryView: View {
     @State private var query = ""
     @State private var isGrid = false
     @State private var sort: ItemSort = .recentlyAdded
-    @State private var showSettings = false
     @State private var showNewPlaylist = false
 
     private let columns = [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)]
@@ -34,9 +33,6 @@ struct LibraryView: View {
             .navigationTitle("Your Library")
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Find in Library")
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button { showSettings = true } label: { Image(systemName: "gearshape") }
-                }
                 if filter == .albums || filter == .songs {
                     ToolbarItem(placement: .topBarTrailing) { SortMenu(selection: $sort) }
                 }
@@ -50,9 +46,6 @@ struct LibraryView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showNewPlaylist = true } label: { Image(systemName: "plus") }
                 }
-            }
-            .sheet(isPresented: $showSettings) {
-                SettingsView().environment(player).environmentObject(library)
             }
             .sheet(isPresented: $showNewPlaylist) {
                 NewPlaylistSheet { name in _ = playlists.createPlaylist(name: name) }
@@ -276,7 +269,7 @@ struct EmptyLibraryHint: View {
         VStack(spacing: 10) {
             Image(systemName: "square.and.arrow.down").font(.system(size: 40)).foregroundStyle(.secondary)
             Text("No music yet").font(.headline)
-            Text("Import songs from Settings (gear icon), or drop files into the Music folder in the Files app, then pull to refresh.")
+            Text("Import songs from Settings (gear on the Home tab), or drop files into the Music folder in the Files app, then pull to refresh.")
                 .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity).padding(.vertical, 40)

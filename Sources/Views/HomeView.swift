@@ -6,6 +6,7 @@ struct HomeView: View {
     @Environment(PlayerEngine.self) private var player
     @EnvironmentObject var playlists: PlaylistStore
     @EnvironmentObject var stats: PlayStatsStore
+    @State private var showSettings = false
 
     private let tile: CGFloat = 150
 
@@ -51,6 +52,14 @@ struct HomeView: View {
                 }
             }
             .navigationTitle("Home")
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { showSettings = true } label: { Image(systemName: "gearshape") }
+                }
+            }
+            .sheet(isPresented: $showSettings) {
+                SettingsView().environment(player).environmentObject(library)
+            }
         }
     }
 
