@@ -3,7 +3,7 @@ import SwiftUI
 /// Interactive frequency-response EQ — drag the curve to bend each of the 10
 /// bands. Styled to match the app: adaptive light/dark + glass cards.
 struct EqualizerView: View {
-    @Environment(PlayerEngine.self) private var player
+    @EnvironmentObject private var player: PlayerEngine
     private let curveHeight: CGFloat = 260
     private let range: Float = 12          // ±12 dB
 
@@ -26,7 +26,7 @@ struct EqualizerView: View {
         .navigationTitle("Equalizer")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .navigationBarTrailing) {
                 Button("Flat") { player.applyEQPreset(Array(repeating: 0, count: 10)) }
             }
         }

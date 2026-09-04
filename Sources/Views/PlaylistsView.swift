@@ -141,13 +141,13 @@ struct PlaylistsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $query, prompt: "Find in Playlists")
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .navigationBarTrailing) {
                 Menu {
                     Button { showNew = true } label: { Label("New Playlist", systemImage: "plus") }
                     Button { showImporter = true } label: { Label("Import Playlist (M3U)", systemImage: "square.and.arrow.down") }
                 } label: { Image(systemName: "plus") }
             }
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .navigationBarTrailing) {
                 Menu {
                     Picker("Sort", selection: $sort) {
                         ForEach(PlaylistListSort.allCases) { Text($0.rawValue).tag($0) }
@@ -199,7 +199,7 @@ struct PlaylistDetailView: View {
     let playlistID: String
     @EnvironmentObject var playlists: PlaylistStore
     @EnvironmentObject var library: LibraryStore
-    @Environment(PlayerEngine.self) private var player
+    @EnvironmentObject private var player: PlayerEngine
     @State private var showAddSongs = false
     @State private var showEditDetails = false
     @State private var sortMode: PlaylistSort = .custom
@@ -302,7 +302,7 @@ struct PlaylistDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $query, prompt: "Find in Playlist")
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .navigationBarTrailing) {
                 Menu {
                     if playlist?.kind == .user {
                         Button { showEditDetails = true } label: { Label("Edit Details", systemImage: "pencil") }
@@ -337,7 +337,7 @@ struct PlaylistDetailView: View {
             AddSongsView(playlistID: playlistID)
                 .environmentObject(playlists)
                 .environmentObject(library)
-                .environment(player)
+                .environmentObject(player)
         }
         .sheet(isPresented: $showEditDetails) {
             EditPlaylistDetailsView(playlistID: playlistID).environmentObject(playlists)
@@ -483,7 +483,7 @@ struct AddSongsView: View {
             .searchable(text: $query, prompt: "Find in library")
             .navigationTitle("Add Songs")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("Done") { dismiss() } } }
         }
     }
 }
@@ -524,7 +524,7 @@ struct AddToPlaylistView: View {
             .listStyle(.plain)
             .navigationTitle("Add to Playlist")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .navigationBarLeading) { Button("Cancel") { dismiss() } } }
             .sheet(isPresented: $showNew) {
                 NewPlaylistSheet { name in
                     let created = playlists.createPlaylist(name: name)
@@ -548,8 +548,8 @@ struct NewPlaylistSheet: View {
                 .navigationTitle("New Playlist")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
-                    ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } }
-                    ToolbarItem(placement: .topBarTrailing) {
+                    ToolbarItem(placement: .navigationBarLeading) { Button("Cancel") { dismiss() } }
+                    ToolbarItem(placement: .navigationBarTrailing) {
                         Button("Create") { onCreate(name); dismiss() }
                             .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
                     }
@@ -614,8 +614,8 @@ struct EditPlaylistDetailsView: View {
             .navigationTitle("Edit Playlist")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .navigationBarLeading) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Done") {
                         playlists.updateDetails(id: playlistID, name: name, details: details)
                         playlists.setCover(coverData, forID: playlistID)
@@ -628,7 +628,7 @@ struct EditPlaylistDetailsView: View {
                 guard !loaded, let p = playlist else { return }
                 name = p.name; details = p.details; coverData = p.coverImageData; loaded = true
             }
-            .onChange(of: pickerItem) { _, item in
+            .onChange(of: pickerItem) { item in
                 guard let item else { return }
                 Task { @MainActor in
                     guard let data = try? await item.loadTransferable(type: Data.self) else { return }

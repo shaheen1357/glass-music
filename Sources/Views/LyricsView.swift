@@ -4,7 +4,8 @@ import SwiftUI
 /// + auto-scroll when timed lyrics exist, plain scroll otherwise.
 struct LyricsView: View {
     let track: Track
-    @Environment(PlayerEngine.self) private var player
+    @ObservedObject var clock: PlaybackClock
+    @EnvironmentObject private var player: PlayerEngine
     @Environment(\.dismiss) private var dismiss
 
     @State private var synced: [LyricLine] = []
@@ -16,7 +17,7 @@ struct LyricsView: View {
     // Last line whose timestamp has passed (binary search — cheap per tick).
     private var activeIndex: Int? {
         guard !synced.isEmpty else { return nil }
-        let t = player.currentTime
+        let t = clock.currentTime
         var lo = 0, hi = synced.count - 1, ans: Int? = nil
         while lo <= hi {
             let mid = (lo + hi) / 2
@@ -117,7 +118,7 @@ struct LyricsView: View {
                 .padding(.vertical, 44)
             }
             .mask(edgeFade)
-            .onChange(of: activeIndex) { _, newValue in
+            .onChange(of: activeIndex) { newValue in
                 guard let newValue, !userScrolling else { return }
                 withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) {
                     proxy.scrollTo(newValue, anchor: UnitPoint(x: 0.5, y: 0.38))

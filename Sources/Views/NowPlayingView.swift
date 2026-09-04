@@ -3,8 +3,9 @@ import MediaPlayer
 
 // MARK: - Mini player (docked above the tab bar)
 struct MiniPlayerView: View {
-    @Environment(PlayerEngine.self) private var player
+    @EnvironmentObject private var player: PlayerEngine
     @Binding var showNowPlaying: Bool
+    @ObservedObject var clock: PlaybackClock
 
     var body: some View {
         if let track = player.currentTrack {
@@ -54,7 +55,7 @@ struct MiniPlayerView: View {
             }
             .overlay(alignment: .bottom) {
                 GeometryReader { geo in
-                    let frac = player.duration > 0 ? min(1, max(0, player.currentTime / player.duration)) : 0
+                    let frac = player.duration > 0 ? min(1, max(0, clock.currentTime / player.duration)) : 0
                     Capsule().fill(Color.accentColor)
                         .frame(width: geo.size.width * frac, height: 2)
                         .frame(maxHeight: .infinity, alignment: .bottom)
@@ -70,7 +71,8 @@ struct MiniPlayerView: View {
 // doesn't rebuild four times a second — which was eating the first tap on the
 // sleep-timer menu and re-decoding the backdrop every tick.
 private struct ProgressScrubber: View {
-    @Environment(PlayerEngine.self) private var player
+    @EnvironmentObject private var player: PlayerEngine
+    @ObservedObject var clock: PlaybackClock
     @State private var scrub: Double = 0
     @State private var isScrubbing = false
 
@@ -90,8 +92,8 @@ private struct ProgressScrubber: View {
             .font(.caption)
             .foregroundStyle(.white.opacity(0.65))
         }
-        .onAppear { scrub = player.currentTime }
-        .onChange(of: player.currentTime) { _, newValue in
+        .onAppear { scrub = clock.currentTime }
+        .onChange(of: clock.currentTime) { newValue in
             if !isScrubbing { scrub = newValue }
         }
     }
@@ -99,7 +101,7 @@ private struct ProgressScrubber: View {
 
 // MARK: - Full Now Playing screen
 struct NowPlayingView: View {
-    @Environment(PlayerEngine.self) private var player
+    @EnvironmentObject private var player: PlayerEngine
     @EnvironmentObject var playlists: PlaylistStore
     @Binding var isPresented: Bool
 
@@ -115,7 +117,7 @@ struct NowPlayingView: View {
             Spacer(minLength: 8)
             VStack(spacing: 16) {
                 trackInfo
-                ProgressScrubber()
+                ProgressScrubber(clock: player.clock)
                 controls
                 bottomBar
                 utilityRow
@@ -129,10 +131,10 @@ struct NowPlayingView: View {
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showQueue) {
             QueueView()
-                .environment(player)
+                .environmentObject(player)
                 .environmentObject(playlists)
                 .presentationDetents([.medium, .large])
-                .presentationBackground(.ultraThinMaterial)
+                .materialSheetBackground()
         }
         .sheet(isPresented: $showAdd) {
             if let t = player.currentTrack {
@@ -141,9 +143,9 @@ struct NowPlayingView: View {
         }
         .sheet(isPresented: $showLyrics) {
             if let t = player.currentTrack {
-                LyricsView(track: t).environment(player)
+                LyricsView(track: t, clock: player.clock).environmentObject(player)
                     .presentationDetents([.large])
-                    .presentationBackground(.ultraThinMaterial)
+                    .materialSheetBackground()
             }
         }
     }
@@ -313,7 +315,7 @@ struct VolumeSlider: UIViewRepresentable {
 
 // MARK: - Queue (editable: reorder / remove / clear)
 struct QueueView: View {
-    @Environment(PlayerEngine.self) private var player
+    @EnvironmentObject private var player: PlayerEngine
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -353,9 +355,9 @@ struct QueueView: View {
             .navigationTitle("Playing Next")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .navigationBarLeading) { Button("Done") { dismiss() } }
                 if !player.upNext.isEmpty {
-                    ToolbarItem(placement: .topBarTrailing) { EditButton() }
+                    ToolbarItem(placement: .navigationBarTrailing) { EditButton() }
                 }
             }
         }

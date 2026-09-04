@@ -2,7 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct SettingsView: View {
-    @Environment(PlayerEngine.self) private var player
+    @EnvironmentObject private var player: PlayerEngine
     @EnvironmentObject var library: LibraryStore
     @Environment(\.dismiss) private var dismiss
     @State private var showImport = false
@@ -65,7 +65,7 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("Done") { dismiss() } } }
             .fileImporter(isPresented: $showImport,
                           allowedContentTypes: [.audio, .mp3, .mpeg4Audio, .wav, .aiff],
                           allowsMultipleSelection: true) { result in

@@ -1,6 +1,18 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+extension View {
+    /// `.presentationBackground` is iOS 16.4+. Apply the material only when
+    /// available so the iOS 16.0 deployment target still compiles and runs.
+    @ViewBuilder func materialSheetBackground() -> some View {
+        if #available(iOS 16.4, *) {
+            self.presentationBackground(.ultraThinMaterial)
+        } else {
+            self
+        }
+    }
+}
+
 // MARK: - Sort options (Apple Music vocabulary)
 enum ItemSort: String, CaseIterable, Identifiable {
     case recentlyAdded = "Recently Added"
@@ -107,7 +119,7 @@ struct ArtworkView: View {
 // MARK: - Sleep timer (shared by Settings + full player)
 /// Live countdown while a timed sleep is running; otherwise the mode text.
 struct SleepStatusText: View {
-    @Environment(PlayerEngine.self) private var player
+    @EnvironmentObject private var player: PlayerEngine
     var body: some View {
         let now = Date()
         if let end = player.sleepEndDate, end > now {
@@ -123,7 +135,7 @@ struct SleepStatusText: View {
 /// The sleep-timer menu with a checkmark on the active choice, so you can always
 /// see what's set. Caller supplies its own label to match its surroundings.
 struct SleepTimerMenu<MenuLabel: View>: View {   // not `Label` — that shadows SwiftUI.Label
-    @Environment(PlayerEngine.self) private var player
+    @EnvironmentObject private var player: PlayerEngine
     @ViewBuilder var label: () -> MenuLabel
 
     var body: some View {
@@ -152,7 +164,7 @@ struct TrackActions: View {
     let track: Track
     var onPlay: (() -> Void)? = nil
     var onAddToPlaylist: () -> Void
-    @Environment(PlayerEngine.self) private var player
+    @EnvironmentObject private var player: PlayerEngine
     @EnvironmentObject var playlists: PlaylistStore
 
     var body: some View {
@@ -200,7 +212,7 @@ struct TrackRow: View {
     let track: Track
     var showArtwork: Bool = true
     var onPlay: (() -> Void)? = nil
-    @Environment(PlayerEngine.self) private var player
+    @EnvironmentObject private var player: PlayerEngine
     @EnvironmentObject var playlists: PlaylistStore
     @State private var showAdd = false
 
@@ -227,7 +239,6 @@ struct TrackRow: View {
                         Image(systemName: player.isPlaying ? "waveform" : "pause.fill")
                             .font(.footnote)
                             .foregroundStyle(Color.accentColor)
-                            .symbolEffect(.variableColor.iterative, isActive: player.isPlaying)
                     }
                 }
                 .contentShape(Rectangle())

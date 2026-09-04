@@ -12,7 +12,7 @@ enum LibraryFilter: String, CaseIterable, Identifiable {
 
 struct LibraryView: View {
     @EnvironmentObject var library: LibraryStore
-    @Environment(PlayerEngine.self) private var player
+    @EnvironmentObject private var player: PlayerEngine
     @EnvironmentObject var playlists: PlaylistStore
     @EnvironmentObject var stats: PlayStatsStore
 
@@ -34,16 +34,16 @@ struct LibraryView: View {
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Find in Library")
             .toolbar {
                 if filter == .albums || filter == .songs {
-                    ToolbarItem(placement: .topBarTrailing) { SortMenu(selection: $sort) }
+                    ToolbarItem(placement: .navigationBarTrailing) { SortMenu(selection: $sort) }
                 }
                 if filter == .playlists || filter == .albums {
-                    ToolbarItem(placement: .topBarTrailing) {
+                    ToolbarItem(placement: .navigationBarTrailing) {
                         Button { withAnimation { isGrid.toggle() } } label: {
                             Image(systemName: isGrid ? "list.bullet" : "square.grid.2x2")
                         }
                     }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button { showNewPlaylist = true } label: { Image(systemName: "plus") }
                 }
             }
@@ -280,7 +280,7 @@ struct EmptyLibraryHint: View {
 struct SongsView: View {
     let title: String
     let tracks: [Track]
-    @Environment(PlayerEngine.self) private var player
+    @EnvironmentObject private var player: PlayerEngine
     @State private var sort: ItemSort = .title
     @State private var query = ""
 
@@ -310,7 +310,7 @@ struct SongsView: View {
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $query, prompt: "Find in \(title)")
-        .toolbar { ToolbarItem(placement: .topBarTrailing) { SortMenu(selection: $sort) } }
+        .toolbar { ToolbarItem(placement: .navigationBarTrailing) { SortMenu(selection: $sort) } }
     }
 }
 
@@ -356,14 +356,14 @@ struct AlbumsView: View {
         .navigationTitle("Albums")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $query, prompt: "Find in Albums")
-        .toolbar { ToolbarItem(placement: .topBarTrailing) { SortMenu(selection: $sort) } }
+        .toolbar { ToolbarItem(placement: .navigationBarTrailing) { SortMenu(selection: $sort) } }
     }
 }
 
 // MARK: - Album detail (Apple Music look)
 struct AlbumDetailView: View {
     let album: Album
-    @Environment(PlayerEngine.self) private var player
+    @EnvironmentObject private var player: PlayerEngine
     @EnvironmentObject var playlists: PlaylistStore
     @State private var addTrack: Track?
 
@@ -479,7 +479,7 @@ struct SortMenu: View {
 
 struct PlayShuffleButtons: View {
     let tracks: [Track]
-    @Environment(PlayerEngine.self) private var player
+    @EnvironmentObject private var player: PlayerEngine
 
     var body: some View {
         HStack(spacing: 12) {

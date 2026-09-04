@@ -3,7 +3,7 @@ options:
   bundleIdPrefix: com.local
   createIntermediateGroups: true
   deploymentTarget:
-    iOS: "18.0"
+    iOS: "16.0"
 settings:
   base:
     MARKETING_VERSION: "1.0"
@@ -14,7 +14,7 @@ targets:
   Music:
     type: application
     platform: iOS
-    deploymentTarget: "18.0"
+    deploymentTarget: "16.0"
     sources:
       - path: Sources
       - path: Resources
@@ -34,7 +34,7 @@ targets:
   MusicTests:
     type: bundle.unit-test
     platform: iOS
-    deploymentTarget: "18.0"
+    deploymentTarget: "16.0"
     sources:
       - path: Tests
     dependencies:

@@ -3,7 +3,7 @@ import SwiftUI
 @main
 struct MusicApp: App {
     @StateObject private var library = LibraryStore()
-    @State private var player = PlayerEngine()
+    @StateObject private var player = PlayerEngine()
     @StateObject private var playlists = PlaylistStore()
     @StateObject private var stats = PlayStatsStore()
     @StateObject private var recents = RecentSearchStore()
@@ -12,7 +12,7 @@ struct MusicApp: App {
         WindowGroup {
             RootView()
                 .environmentObject(library)
-                .environment(player)
+                .environmentObject(player)
                 .environmentObject(playlists)
                 .environmentObject(stats)
                 .environmentObject(recents)

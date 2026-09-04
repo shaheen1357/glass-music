@@ -7,7 +7,7 @@ private enum SearchRoute: Hashable {
 
 struct SearchView: View {
     @EnvironmentObject var library: LibraryStore
-    @Environment(PlayerEngine.self) private var player
+    @EnvironmentObject private var player: PlayerEngine
     @EnvironmentObject var recents: RecentSearchStore
     @State private var query = ""
     @State private var path = NavigationPath()
@@ -63,7 +63,7 @@ struct SearchView: View {
         NavigationStack(path: $path) {
             Group {
                 if !trimmed.isEmpty {
-                    if noResults { ContentUnavailableView.search(text: query) }
+                    if noResults { noResultsView }
                     else { resultsList }
                 } else if !resolvedRecents.isEmpty {
                     ScrollView {
@@ -88,6 +88,19 @@ struct SearchView: View {
                 if !trimmed.isEmpty { recents.add(.query(text: trimmed)) }
             }
         }
+    }
+
+    // Custom empty state (ContentUnavailableView is iOS 17+).
+    private var noResultsView: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 44)).foregroundStyle(.secondary)
+            Text("No Results").font(.title3.bold())
+            Text("for \"\(query)\"").font(.subheadline).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(40)
     }
 
     // MARK: - Results (Spotify-style: Artists / Albums / Songs)

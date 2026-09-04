@@ -3,7 +3,7 @@ import SwiftUI
 // Spotify-style content-first Home, Apple-Music aesthetic. No ads — your library.
 struct HomeView: View {
     @EnvironmentObject var library: LibraryStore
-    @Environment(PlayerEngine.self) private var player
+    @EnvironmentObject private var player: PlayerEngine
     @EnvironmentObject var playlists: PlaylistStore
     @EnvironmentObject var stats: PlayStatsStore
     @State private var showSettings = false
@@ -53,12 +53,12 @@ struct HomeView: View {
             }
             .navigationTitle("Home")
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .navigationBarLeading) {
                     Button { showSettings = true } label: { Image(systemName: "gearshape") }
                 }
             }
             .sheet(isPresented: $showSettings) {
-                SettingsView().environment(player).environmentObject(library)
+                SettingsView().environmentObject(player).environmentObject(library)
             }
         }
     }

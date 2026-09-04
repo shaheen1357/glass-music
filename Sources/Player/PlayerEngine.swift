@@ -2,25 +2,32 @@ import Foundation
 import AVFoundation
 import MediaPlayer
 import UIKit
-import Observation
+import Combine
 
 enum RepeatMode {
     case off, all, one
 }
 
+/// The ~4 Hz playhead, kept separate from PlayerEngine so ticking it re-renders
+/// only the scrubber / mini-player / lyrics — not every view observing the
+/// engine. (On iOS 17+ @Observable gave this via per-read tracking; on iOS 16
+/// ObservableObject we split the publisher to keep the same isolation.)
+final class PlaybackClock: ObservableObject {
+    @Published var currentTime: Double = 0
+}
+
 @MainActor
-@Observable
-final class PlayerEngine {
-    private(set) var queue: [Track] = []
-    private(set) var currentIndex: Int = 0
-    private(set) var isPlaying = false
-    var currentTime: Double = 0
-    var duration: Double = 0
-    var repeatMode: RepeatMode = .off
-    var isShuffled = false
-    var sleepTimerMinutes: Int? = nil
-    private(set) var sleepEndDate: Date? = nil    // for a live countdown in the UI
-    var sleepAtTrackEnd = false
+final class PlayerEngine: ObservableObject {
+    let clock = PlaybackClock()
+    @Published private(set) var queue: [Track] = []
+    @Published private(set) var currentIndex: Int = 0
+    @Published private(set) var isPlaying = false
+    @Published var duration: Double = 0
+    @Published var repeatMode: RepeatMode = .off
+    @Published var isShuffled = false
+    @Published var sleepTimerMinutes: Int? = nil
+    @Published private(set) var sleepEndDate: Date? = nil    // for a live countdown in the UI
+    @Published var sleepAtTrackEnd = false
 
     // MARK: Audio engine graph  (playerNode -> eq -> normGain -> mainMixer -> output)
     private let engine = AVAudioEngine()
@@ -47,11 +54,11 @@ final class PlayerEngine {
         EQPreset(name: "Loudness",     gains: [5, 4, 1, 0, -1, -1, 0, 2, 4, 5]),
         EQPreset(name: "Acoustic",     gains: [4, 3, 2, 0, 1, 1, 3, 3, 2, 1])
     ]
-    private(set) var eqEnabled = false
-    private(set) var eqGains: [Float] = Array(repeating: 0, count: 10)
+    @Published private(set) var eqEnabled = false
+    @Published private(set) var eqGains: [Float] = Array(repeating: 0, count: 10)
 
     // MARK: Volume normalization
-    private(set) var normalizationEnabled = false
+    @Published private(set) var normalizationEnabled = false
 
     // MARK: Playback bookkeeping
     private var audioFile: AVAudioFile?
@@ -198,9 +205,9 @@ final class PlayerEngine {
 
     private func restartAndResume() {
         guard audioFile != nil, sampleRate > 0 else { return }
-        // currentTime is the last position the timer published; the render clock
+        // clock.currentTime is the last position the timer published; the render clock
         // may already be gone by the time a config-change notification arrives.
-        let resumeFrame = min(max(0, AVAudioFramePosition(max(0, currentTime) * sampleRate)), audioLengthSamples)
+        let resumeFrame = min(max(0, AVAudioFramePosition(max(0, clock.currentTime) * sampleRate)), audioLengthSamples)
         do {
             activateSession()
             if let fmt = currentFormat { wire(fmt); reapplyGraphParams() }
@@ -235,9 +242,9 @@ final class PlayerEngine {
     private func startDisplayTimer() {
         stopDisplayTimer()
         // Default run-loop mode: the timer pauses during scroll tracking, so we
-        // don't publish currentTime (and re-render views) mid-scroll.
+        // don't publish clock.currentTime (and re-render views) mid-scroll.
         displayTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.updateCurrentTime() }
+            Task { @MainActor in self?.updateCurrentTime() }
         }
     }
 
@@ -248,7 +255,7 @@ final class PlayerEngine {
 
     private func updateCurrentTime() {
         guard sampleRate > 0 else { return }
-        currentTime = Double(currentFrame) / sampleRate
+        clock.currentTime = Double(currentFrame) / sampleRate
         // Don't rewrite Now Playing elapsed/rate every tick — the system
         // extrapolates position between discrete writes, and per-tick writes get
         // throttled and desync the lock screen in long background sessions. We set
@@ -312,7 +319,7 @@ final class PlayerEngine {
             playerNode.play()
             isPlaying = true
             duration = sampleRate > 0 ? Double(audioLengthSamples) / sampleRate : track.duration
-            currentTime = 0
+            clock.currentTime = 0
             startDisplayTimer()
             updateNowPlayingInfo()
         } catch {
@@ -355,7 +362,7 @@ final class PlayerEngine {
             playerNode.stop()
             scheduleSegment(from: 0)
             playerNode.play()
-            currentTime = 0
+            clock.currentTime = 0
             isPlaying = true
             startDisplayTimer()
             updateNowPlayingInfo()
@@ -392,7 +399,7 @@ final class PlayerEngine {
 
     func previous() {
         guard !queue.isEmpty else { return }
-        if currentTime > 3 {
+        if clock.currentTime > 3 {
             seek(to: 0)
             return
         }
@@ -413,7 +420,7 @@ final class PlayerEngine {
         // "playing" state (e.g. dragging the scrubber fully to the end).
         let target = min(AVAudioFramePosition(clamped * sampleRate), max(0, audioLengthSamples - 1))
         seekFrame = target
-        currentTime = Double(target) / sampleRate
+        clock.currentTime = Double(target) / sampleRate
 
         playerNode.stop()                        // clears the schedule; sampleTime resets to 0
         if target < audioLengthSamples {
@@ -694,7 +701,7 @@ final class PlayerEngine {
             MPMediaItemPropertyArtist: track.artist,
             MPMediaItemPropertyAlbumTitle: track.album,
             MPMediaItemPropertyPlaybackDuration: duration,
-            MPNowPlayingInfoPropertyElapsedPlaybackTime: currentTime,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: clock.currentTime,
             MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0
         ]
         if let image = track.artwork {
@@ -704,7 +711,7 @@ final class PlayerEngine {
     }
 
     private func refreshNowPlayingElapsed() {
-        MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
+        MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPNowPlayingInfoPropertyElapsedPlaybackTime] = clock.currentTime
         MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
     }
 }
