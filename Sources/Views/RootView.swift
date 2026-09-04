@@ -5,6 +5,7 @@ struct RootView: View {
     @EnvironmentObject var playlists: PlaylistStore
     @State private var showNowPlaying = false
     @State private var selection = 0
+    @Namespace private var playerNS
 
     var body: some View {
         content
@@ -13,6 +14,10 @@ struct RootView: View {
                 NowPlayingView(isPresented: $showNowPlaying)
                     .environmentObject(player)
                     .environmentObject(playlists)
+                    // Apple-Music-style zoom out of the mini player. Works because
+                    // showNowPlaying is a plain @State (a $-synthesized binding);
+                    // a router/@Observable binding would break the zoom.
+                    .navigationTransition(.zoom(sourceID: "player", in: playerNS))
             }
     }
 
@@ -34,6 +39,7 @@ struct RootView: View {
             if hasTrack {
                 tabs.tabViewBottomAccessory {
                     MiniPlayerView(showNowPlaying: $showNowPlaying)
+                        .matchedTransitionSource(id: "player", in: playerNS)
                 }
             } else {
                 tabs
@@ -46,6 +52,7 @@ struct RootView: View {
                         .overlay(alignment: .top) {
                             Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 0.5)
                         }
+                        .matchedTransitionSource(id: "player", in: playerNS)
                 }
             }
         }

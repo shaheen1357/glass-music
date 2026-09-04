@@ -8,41 +8,45 @@ struct MiniPlayerView: View {
 
     var body: some View {
         if let track = player.currentTrack {
-            // Whole bar is one Button (opens the full player). The transport
-            // controls are nested Buttons that win taps in their own zones.
-            Button {
-                showNowPlaying = true
-            } label: {
-                HStack(spacing: 12) {
-                    ArtworkView(data: track.artworkData, corner: 6)
-                        .frame(width: 42, height: 42)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(track.title).font(.subheadline.weight(.medium)).lineLimit(1)
-                        Text(track.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            // Sibling buttons (NOT nested): the expand target and the three
+            // transport controls are peers in one HStack. .contentShape on the
+            // expand label restores the full-width hit region (incl. the Spacer)
+            // that iOS 26's hit-testing regression otherwise strips — the real
+            // cause of the flaky tap (Apple DTS fix).
+            HStack(spacing: 12) {
+                Button { showNowPlaying = true } label: {
+                    HStack(spacing: 12) {
+                        ArtworkView(data: track.artworkData, corner: 6)
+                            .frame(width: 42, height: 42)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(track.title).font(.subheadline.weight(.medium)).lineLimit(1)
+                            Text(track.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
                     }
-                    Spacer(minLength: 8)
-                    Button { player.previous() } label: {
-                        Image(systemName: "backward.fill")
-                            .font(.title3).frame(width: 36, height: 46).contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    Button { player.togglePlayPause() } label: {
-                        Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                            .font(.title3).frame(width: 46, height: 46).contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    Button { player.next() } label: {
-                        Image(systemName: "forward.fill")
-                            .font(.title3).frame(width: 36, height: 46).contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
+                    .contentShape(Rectangle())
                 }
-                .foregroundStyle(.primary)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 4)
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+
+                Button { player.previous() } label: {
+                    Image(systemName: "backward.fill")
+                        .font(.title3).frame(width: 34, height: 44).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                Button { player.togglePlayPause() } label: {
+                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.title3).frame(width: 42, height: 44).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                Button { player.next() } label: {
+                    Image(systemName: "forward.fill")
+                        .font(.title3).frame(width: 34, height: 44).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
             .overlay(alignment: .bottom) {
                 GeometryReader { geo in
                     let frac = player.duration > 0 ? min(1, max(0, player.currentTime / player.duration)) : 0
