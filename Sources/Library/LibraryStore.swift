@@ -122,7 +122,7 @@ final class LibraryStore: ObservableObject {
         }
 
         return Track(
-            id: url.path,
+            id: url.lastPathComponent,
             url: url,
             title: title,
             artist: artist,
@@ -254,7 +254,7 @@ final class LibraryStore: ObservableObject {
         do {
             if fm.fileExists(atPath: destination.path) { try? fm.removeItem(at: destination) }
             try fm.copyItem(at: source, to: destination)
-            return destination.path
+            return destination.lastPathComponent
         } catch {
             print("Import failed for \(source.lastPathComponent): \(error)")
             return nil

@@ -38,7 +38,13 @@ final class PlaylistStore: ObservableObject {
     private func load() {
         guard let data = try? Data(contentsOf: fileURL),
               let decoded = try? JSONDecoder().decode([Playlist].self, from: data) else { return }
-        playlists = decoded
+        // Migrate legacy absolute-path track IDs to stable filenames so playlists
+        // survive app reinstalls (the container path changes, filenames don't).
+        playlists = decoded.map { pl in
+            var p = pl
+            p.trackIDs = p.trackIDs.map { ($0 as NSString).lastPathComponent }
+            return p
+        }
     }
 
     private func save() {

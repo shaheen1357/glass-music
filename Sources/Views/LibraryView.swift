@@ -133,8 +133,8 @@ struct LibraryView: View {
                                     }
                                     Text(pl.name)
                                 }
-                                Text(pl.kind == .podcasts ? "\(pl.trackIDs.count) episodes"
-                                                          : "Playlist · \(pl.trackIDs.count) songs")
+                                Text(pl.kind == .podcasts ? "\(playlists.tracks(for: pl, in: library).count) episodes"
+                                                          : "Playlist · \(playlists.tracks(for: pl, in: library).count) songs")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                         }

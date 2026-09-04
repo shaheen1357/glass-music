@@ -206,6 +206,8 @@ struct PlaylistDetailView: View {
     @State private var showExported = false
     @State private var exportedURL: URL?
     @State private var showImportSongs = false
+    @State private var showImportFolder = false
+    @Environment(\.dismiss) private var dismiss
 
     private var playlist: Playlist? { playlists.playlists.first { $0.id == playlistID } }
     private var storedTracks: [Track] { playlist.map { playlists.tracks(for: $0, in: library) } ?? [] }
@@ -312,6 +314,7 @@ struct PlaylistDetailView: View {
                     } label: { Label("Export as M3U", systemImage: "square.and.arrow.up") }
                     Button { showAddSongs = true } label: { Label("Add Songs", systemImage: "plus") }
                     Button { showImportSongs = true } label: { Label("Import Songs", systemImage: "square.and.arrow.down") }
+                    Button { showImportFolder = true } label: { Label("Import Folder", systemImage: "folder.badge.plus") }
                     Picker("Sort By", selection: $sortMode) {
                         ForEach(PlaylistSort.allCases) { Text($0.rawValue).tag($0) }
                     }
@@ -319,6 +322,12 @@ struct PlaylistDetailView: View {
                         Button {
                             withAnimation { editMode = editMode == .active ? .inactive : .active }
                         } label: { Label("Reorder", systemImage: "arrow.up.arrow.down") }
+                    }
+                    if playlist?.kind == .user {
+                        Divider()
+                        Button(role: .destructive) {
+                            if let p = playlist { playlists.delete(p); dismiss() }
+                        } label: { Label("Delete Playlist", systemImage: "trash") }
                     }
                 } label: { Image(systemName: "ellipsis.circle") }
             }
@@ -333,8 +342,16 @@ struct PlaylistDetailView: View {
             EditPlaylistDetailsView(playlistID: playlistID).environmentObject(playlists)
         }
         .fileImporter(isPresented: $showImportSongs,
-                      allowedContentTypes: [.folder, .audio, .mp3, .mpeg4Audio, .wav, .aiff],
+                      allowedContentTypes: [.audio, .mp3, .mpeg4Audio, .wav, .aiff],
                       allowsMultipleSelection: true) { result in
+            if case .success(let urls) = result {
+                let ids = library.importFiles(urls)
+                playlists.addTrackIDs(ids, to: playlistID, allowDuplicates: true)
+            }
+        }
+        .fileImporter(isPresented: $showImportFolder,
+                      allowedContentTypes: [.folder],
+                      allowsMultipleSelection: false) { result in
             if case .success(let urls) = result {
                 let ids = library.importFiles(urls)
                 playlists.addTrackIDs(ids, to: playlistID, allowDuplicates: true)
