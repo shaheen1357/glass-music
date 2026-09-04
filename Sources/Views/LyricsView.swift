@@ -26,13 +26,12 @@ struct LyricsView: View {
     }
 
     var body: some View {
-        ZStack {
-            backdrop
-            VStack(spacing: 0) {
-                topBar
-                content
-            }
+        VStack(spacing: 0) {
+            topBar
+            content
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(backdrop)   // .background can't inflate content width (ZStack could)
         .preferredColorScheme(.dark)
         .task { await load() }
     }

@@ -8,45 +8,41 @@ struct MiniPlayerView: View {
 
     var body: some View {
         if let track = player.currentTrack {
-            ZStack {
-                // Full-bleed tap layer BEHIND the content: opens the full player
-                // from anywhere that isn't a transport button. Artwork/text are
-                // non-interactive so their taps fall through to this button.
-                Button { showNowPlaying = true } label: {
-                    Color.clear.contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-
+            // Whole bar is one Button (opens the full player). The transport
+            // controls are nested Buttons that win taps in their own zones.
+            Button {
+                showNowPlaying = true
+            } label: {
                 HStack(spacing: 12) {
                     ArtworkView(data: track.artworkData, corner: 6)
                         .frame(width: 42, height: 42)
-                        .allowsHitTesting(false)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(track.title).font(.subheadline.weight(.medium)).lineLimit(1)
                         Text(track.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
-                    .allowsHitTesting(false)
-                    Spacer(minLength: 4)
+                    Spacer(minLength: 8)
                     Button { player.previous() } label: {
                         Image(systemName: "backward.fill")
-                            .font(.title3).frame(width: 34, height: 40).contentShape(Rectangle())
+                            .font(.title3).frame(width: 36, height: 46).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     Button { player.togglePlayPause() } label: {
                         Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                            .font(.title3).frame(width: 40, height: 40).contentShape(Rectangle())
+                            .font(.title3).frame(width: 46, height: 46).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     Button { player.next() } label: {
                         Image(systemName: "forward.fill")
-                            .font(.title3).frame(width: 40, height: 40).contentShape(Rectangle())
+                            .font(.title3).frame(width: 36, height: 46).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
                 .foregroundStyle(.primary)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 4)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
             .overlay(alignment: .bottom) {
                 GeometryReader { geo in
                     let frac = player.duration > 0 ? min(1, max(0, player.currentTime / player.duration)) : 0
