@@ -8,45 +8,50 @@ struct MiniPlayerView: View {
 
     var body: some View {
         if let track = player.currentTrack {
-            // Sibling buttons (NOT nested): the expand target and the three
-            // transport controls are peers in one HStack. .contentShape on the
-            // expand label restores the full-width hit region (incl. the Spacer)
-            // that iOS 26's hit-testing regression otherwise strips — the real
-            // cause of the flaky tap (Apple DTS fix).
-            HStack(spacing: 12) {
-                Button { showNowPlaying = true } label: {
-                    HStack(spacing: 12) {
-                        ArtworkView(id: track.id, data: track.artworkData, corner: 6)
-                            .frame(width: 42, height: 42)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(track.title).font(.subheadline.weight(.medium)).lineLimit(1)
-                            Text(track.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        }
-                        Spacer(minLength: 0)
+            // Full-width expand button: opens the player from ANY point that
+            // isn't a transport glyph. Real content + .contentShape makes the
+            // whole strip (Spacer + reserved control area) hittable despite iOS
+            // 26's opaque-pixels hit-testing regression. The controls are an
+            // OVERLAY (a sibling layer, NOT nested in the button), so their
+            // glyphs capture their own taps and every gap falls through to open.
+            Button { showNowPlaying = true } label: {
+                HStack(spacing: 12) {
+                    ArtworkView(id: track.id, data: track.artworkData, corner: 6)
+                        .frame(width: 42, height: 42)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(track.title).font(.subheadline.weight(.medium)).lineLimit(1)
+                        Text(track.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
-                    .contentShape(Rectangle())
+                    Spacer(minLength: 0)
+                    Color.clear.frame(width: 132, height: 44)   // room under the controls
                 }
-                .buttonStyle(.plain)
-
-                Button { player.previous() } label: {
-                    Image(systemName: "backward.fill")
-                        .font(.title3).frame(width: 34, height: 44).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                Button { player.togglePlayPause() } label: {
-                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.title3).frame(width: 42, height: 44).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                Button { player.next() } label: {
-                    Image(systemName: "forward.fill")
-                        .font(.title3).frame(width: 34, height: 44).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
             .foregroundStyle(.primary)
             .padding(.horizontal, 12)
             .padding(.vertical, 4)
+            .overlay(alignment: .trailing) {
+                HStack(spacing: 6) {
+                    Button { player.previous() } label: {
+                        Image(systemName: "backward.fill")
+                            .font(.title3).frame(width: 36, height: 44).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    Button { player.togglePlayPause() } label: {
+                        Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.title3).frame(width: 40, height: 44).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    Button { player.next() } label: {
+                        Image(systemName: "forward.fill")
+                            .font(.title3).frame(width: 36, height: 44).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .foregroundStyle(.primary)
+                .padding(.trailing, 12)
+            }
             .overlay(alignment: .bottom) {
                 GeometryReader { geo in
                     let frac = player.duration > 0 ? min(1, max(0, player.currentTime / player.duration)) : 0

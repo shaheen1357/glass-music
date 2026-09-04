@@ -5,6 +5,7 @@ struct RootView: View {
     @EnvironmentObject var playlists: PlaylistStore
     @State private var showNowPlaying = false
     @State private var selection = 0
+    @Namespace private var playerNS
 
     var body: some View {
         content
@@ -13,6 +14,9 @@ struct RootView: View {
                 NowPlayingView(isPresented: $showNowPlaying)
                     .environment(player)
                     .environmentObject(playlists)
+                    // Apple-Music zoom out of the mini player (plain @State binding
+                    // keeps the transition from falling back).
+                    .navigationTransition(.zoom(sourceID: "player", in: playerNS))
             }
     }
 
@@ -29,20 +33,17 @@ struct RootView: View {
     @ViewBuilder private var content: some View {
         let hasTrack = player.currentTrack != nil
         if #available(iOS 26.1, *) {
-            // Modifier is ALWAYS applied; only the Bool changes, so the TabView
-            // keeps its structural identity — no rebuild. Playing the first song
-            // no longer resets your tab / open playlist. isEnabled: is a shipping
-            // (non-beta) iOS 26.1 API, and it hides the empty pill cleanly.
+            // Always-applied modifier (only the Bool changes) keeps TabView
+            // identity so the first song doesn't reset your tab. iOS 26.1 API.
             tabs.tabViewBottomAccessory(isEnabled: hasTrack) {
                 MiniPlayerView(showNowPlaying: $showNowPlaying)
+                    .matchedTransitionSource(id: "player", in: playerNS)
             }
         } else if #available(iOS 26.0, *) {
-            // 26.0 lacks isEnabled, but the content-only modifier is still applied
-            // unconditionally here (the check is INSIDE), so identity stays stable
-            // and empty content hides cleanly on 26.0.
             tabs.tabViewBottomAccessory {
                 if hasTrack {
                     MiniPlayerView(showNowPlaying: $showNowPlaying)
+                        .matchedTransitionSource(id: "player", in: playerNS)
                 }
             }
         } else {
@@ -53,6 +54,7 @@ struct RootView: View {
                         .overlay(alignment: .top) {
                             Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 0.5)
                         }
+                        .matchedTransitionSource(id: "player", in: playerNS)
                 }
             }
         }
