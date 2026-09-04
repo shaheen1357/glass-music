@@ -79,7 +79,14 @@ struct ArtworkView: View {
         .task(id: id) {
             // Only work on a cache miss; decode off the main thread so scrolling
             // in new cells doesn't hitch, then cache for instant reuse.
-            if ArtworkCache.shared.object(forKey: id as NSString) != nil { return }
+            // On a cache hit, keep our own strong copy in @State. The mini player
+            // is long-lived and never re-runs this task (id doesn't change), so if
+            // we relied only on the shared NSCache — which iOS purges on memory
+            // pressure while backgrounded — the artwork would blank out on return.
+            if let cached = ArtworkCache.shared.object(forKey: id as NSString) {
+                decoded = cached
+                return
+            }
             guard let data else { return }
             // UIImage(data:) is LAZY — it defers the pixel decode to the main
             // thread at draw time, which is the real scroll-jank source.
@@ -94,6 +101,49 @@ struct ArtworkView: View {
             ArtworkCache.shared.setObject(img, forKey: id as NSString, cost: cost)
             decoded = img
         }
+    }
+}
+
+// MARK: - Sleep timer (shared by Settings + full player)
+/// Live countdown while a timed sleep is running; otherwise the mode text.
+struct SleepStatusText: View {
+    @Environment(PlayerEngine.self) private var player
+    var body: some View {
+        let now = Date()
+        if let end = player.sleepEndDate, end > now {
+            Text(timerInterval: now...end, countsDown: true)
+        } else if player.sleepAtTrackEnd {
+            Text("End of Track")
+        } else {
+            Text("Off")
+        }
+    }
+}
+
+/// The sleep-timer menu with a checkmark on the active choice, so you can always
+/// see what's set. Caller supplies its own label to match its surroundings.
+struct SleepTimerMenu<MenuLabel: View>: View {   // not `Label` — that shadows SwiftUI.Label
+    @Environment(PlayerEngine.self) private var player
+    @ViewBuilder var label: () -> MenuLabel
+
+    var body: some View {
+        Menu {
+            Button { player.cancelSleepTimer() } label: {
+                item("Off", active: player.sleepTimerMinutes == nil && !player.sleepAtTrackEnd)
+            }
+            ForEach([5, 10, 15, 30, 45, 60], id: \.self) { m in
+                Button { player.startSleepTimer(minutes: m) } label: {
+                    item("\(m) minutes", active: player.sleepTimerMinutes == m)
+                }
+            }
+            Button { player.sleepAtEndOfTrack() } label: {
+                item("End of Track", active: player.sleepAtTrackEnd)
+            }
+        } label: { label() }
+    }
+
+    @ViewBuilder private func item(_ title: String, active: Bool) -> some View {
+        if active { Label(title, systemImage: "checkmark") } else { Text(title) }
     }
 }
 

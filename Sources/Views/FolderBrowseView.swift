@@ -30,7 +30,9 @@ struct FolderBrowseView: View {
     var body: some View {
         let items = contents
         let map = Dictionary(library.tracks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        let tracks = items.files.compactMap { map[$0.path] }
+        // Track ids are the filename (url.lastPathComponent), so match on that —
+        // matching on the full .path always missed and the folder listed no songs.
+        let tracks = items.files.compactMap { map[$0.lastPathComponent] }
 
         List {
             if items.folders.isEmpty && tracks.isEmpty {

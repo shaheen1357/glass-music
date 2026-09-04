@@ -65,14 +65,44 @@ struct MiniPlayerView: View {
     }
 }
 
+// Isolates the ~4Hz playhead. Keeping the currentTime subscription inside this
+// small view means the rest of Now Playing (menus, controls, blurred backdrop)
+// doesn't rebuild four times a second — which was eating the first tap on the
+// sleep-timer menu and re-decoding the backdrop every tick.
+private struct ProgressScrubber: View {
+    @Environment(PlayerEngine.self) private var player
+    @State private var scrub: Double = 0
+    @State private var isScrubbing = false
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Slider(value: $scrub, in: 0...max(player.duration, 0.1),
+                   onEditingChanged: { editing in
+                       isScrubbing = editing
+                       if !editing { player.seek(to: scrub) }
+                   })
+            .tint(.white)
+            HStack {
+                Text(formatTime(scrub))
+                Spacer()
+                Text("-" + formatTime(max(0, player.duration - scrub)))
+            }
+            .font(.caption)
+            .foregroundStyle(.white.opacity(0.65))
+        }
+        .onAppear { scrub = player.currentTime }
+        .onChange(of: player.currentTime) { _, newValue in
+            if !isScrubbing { scrub = newValue }
+        }
+    }
+}
+
 // MARK: - Full Now Playing screen
 struct NowPlayingView: View {
     @Environment(PlayerEngine.self) private var player
     @EnvironmentObject var playlists: PlaylistStore
     @Binding var isPresented: Bool
 
-    @State private var scrub: Double = 0
-    @State private var isScrubbing = false
     @State private var showQueue = false
     @State private var showAdd = false
     @State private var showLyrics = false
@@ -85,7 +115,7 @@ struct NowPlayingView: View {
             Spacer(minLength: 8)
             VStack(spacing: 16) {
                 trackInfo
-                progress
+                ProgressScrubber()
                 controls
                 bottomBar
                 utilityRow
@@ -97,10 +127,6 @@ struct NowPlayingView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(background)
         .preferredColorScheme(.dark)
-        .onAppear { scrub = player.currentTime }
-        .onChange(of: player.currentTime) { _, newValue in
-            if !isScrubbing { scrub = newValue }
-        }
         .sheet(isPresented: $showQueue) {
             QueueView()
                 .environment(player)
@@ -212,24 +238,6 @@ struct NowPlayingView: View {
         }
     }
 
-    private var progress: some View {
-        VStack(spacing: 4) {
-            Slider(value: $scrub, in: 0...max(player.duration, 0.1),
-                   onEditingChanged: { editing in
-                       isScrubbing = editing
-                       if !editing { player.seek(to: scrub) }
-                   })
-            .tint(.white)
-            HStack {
-                Text(formatTime(scrub))
-                Spacer()
-                Text("-" + formatTime(max(0, player.duration - scrub)))
-            }
-            .font(.caption)
-            .foregroundStyle(.white.opacity(0.65))
-        }
-    }
-
     private var controls: some View {
         HStack {
             Button { player.previous() } label: { Image(systemName: "backward.fill").font(.title) }
@@ -268,17 +276,11 @@ struct NowPlayingView: View {
 extension NowPlayingView {
     var utilityRow: some View {
         HStack {
-            Menu {
-                Button("Off") { player.cancelSleepTimer() }
-                ForEach([5, 10, 15, 30, 45, 60], id: \.self) { m in
-                    Button("\(m) minutes") { player.startSleepTimer(minutes: m) }
-                }
-                Button("End of Track") { player.sleepAtEndOfTrack() }
-            } label: {
+            SleepTimerMenu {
                 HStack(spacing: 6) {
                     Image(systemName: "moon.zzz")
                     if player.sleepTimerMinutes != nil || player.sleepAtTrackEnd {
-                        Text(player.sleepStatusText).font(.caption)
+                        SleepStatusText().font(.caption)
                     }
                 }
                 .foregroundStyle((player.sleepTimerMinutes != nil || player.sleepAtTrackEnd)

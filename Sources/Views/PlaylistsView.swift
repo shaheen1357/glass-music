@@ -192,6 +192,8 @@ struct PlaylistsView: View {
     }
 }
 
+private enum PlaylistImportKind: Equatable { case songs, folder }
+
 // MARK: - Playlist detail (Apple Music look + Spotify function)
 struct PlaylistDetailView: View {
     let playlistID: String
@@ -205,8 +207,7 @@ struct PlaylistDetailView: View {
     @State private var editMode: EditMode = .inactive
     @State private var showExported = false
     @State private var exportedURL: URL?
-    @State private var showImportSongs = false
-    @State private var showImportFolder = false
+    @State private var importKind: PlaylistImportKind?
     @Environment(\.dismiss) private var dismiss
 
     private var playlist: Playlist? { playlists.playlists.first { $0.id == playlistID } }
@@ -313,8 +314,8 @@ struct PlaylistDetailView: View {
                         }
                     } label: { Label("Export as M3U", systemImage: "square.and.arrow.up") }
                     Button { showAddSongs = true } label: { Label("Add Songs", systemImage: "plus") }
-                    Button { showImportSongs = true } label: { Label("Import Songs", systemImage: "square.and.arrow.down") }
-                    Button { showImportFolder = true } label: { Label("Import Folder", systemImage: "folder.badge.plus") }
+                    Button { importKind = .songs } label: { Label("Import Songs", systemImage: "square.and.arrow.down") }
+                    Button { importKind = .folder } label: { Label("Import Folder", systemImage: "folder.badge.plus") }
                     Picker("Sort By", selection: $sortMode) {
                         ForEach(PlaylistSort.allCases) { Text($0.rawValue).tag($0) }
                     }
@@ -341,21 +342,23 @@ struct PlaylistDetailView: View {
         .sheet(isPresented: $showEditDetails) {
             EditPlaylistDetailsView(playlistID: playlistID).environmentObject(playlists)
         }
-        .fileImporter(isPresented: $showImportSongs,
-                      allowedContentTypes: [.audio, .mp3, .mpeg4Audio, .wav, .aiff],
-                      allowsMultipleSelection: true) { result in
+        // One fileImporter, mode chosen by `importKind`. Two separate
+        // .fileImporter modifiers on the same view collide — SwiftUI only honors
+        // one, which is why "Import Songs" did nothing.
+        .fileImporter(
+            isPresented: Binding(get: { importKind != nil },
+                                 set: { if !$0 { importKind = nil } }),
+            allowedContentTypes: importKind == .folder ? [.folder]
+                                                       : [.audio, .mp3, .mpeg4Audio, .wav, .aiff],
+            allowsMultipleSelection: importKind != .folder
+        ) { result in
             if case .success(let urls) = result {
                 let ids = library.importFiles(urls)
-                playlists.addTrackIDs(ids, to: playlistID, allowDuplicates: true)
+                // No duplicates: a repeated id in this id-keyed, editable List
+                // corrupts row identity and makes swipe-delete remove every copy.
+                playlists.addTrackIDs(ids, to: playlistID)
             }
-        }
-        .fileImporter(isPresented: $showImportFolder,
-                      allowedContentTypes: [.folder],
-                      allowsMultipleSelection: false) { result in
-            if case .success(let urls) = result {
-                let ids = library.importFiles(urls)
-                playlists.addTrackIDs(ids, to: playlistID, allowDuplicates: true)
-            }
+            importKind = nil
         }
         .alert("Exported", isPresented: $showExported) {
             Button("OK", role: .cancel) { }
@@ -405,17 +408,14 @@ struct PlaylistDetailView: View {
             }
             Spacer(minLength: 8)
             Button {
-                guard !displayedTracks.isEmpty else { return }
-                if !player.isShuffled { player.toggleShuffle() }
-                player.play(tracks: displayedTracks, startAt: Int.random(in: 0..<displayedTracks.count))
+                player.playShuffled(displayedTracks)
             } label: {
                 Image(systemName: "shuffle").font(.title2)
                     .foregroundStyle(displayedTracks.isEmpty ? Color.secondary : Color.accentColor)
             }
             .disabled(displayedTracks.isEmpty)
             Button {
-                if player.isShuffled { player.toggleShuffle() }
-                player.play(tracks: displayedTracks, startAt: 0)
+                player.playInOrder(displayedTracks)
             } label: {
                 Image(systemName: "play.fill").font(.title2).foregroundStyle(.white)
                     .frame(width: 52, height: 52)

@@ -32,6 +32,12 @@ final class LibraryStore: ObservableObject {
             }
         }
         result.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        // Dedup by id. The id is the filename, so two same-named files in
+        // different subfolders would otherwise share an id — duplicate ids in a
+        // ForEach/List (keyed on id) corrupt row identity. tracksByID already
+        // keeps only the first, so drop the rest here too and stay consistent.
+        var seenIDs = Set<String>()
+        result = result.filter { seenIDs.insert($0.id).inserted }
         #if targetEnvironment(simulator)
         if result.isEmpty { result = Self.demoTracks() }
         #endif
@@ -40,15 +46,24 @@ final class LibraryStore: ObservableObject {
     }
 
     private func audioFileURLs() -> [URL] {
+        // Explicit iterative deep walk: drill through folders-within-folders to
+        // any depth. Each directory is read independently, so one unreadable
+        // subfolder is skipped instead of silently halting the whole scan (the
+        // failure mode of a bare enumerator with no error handler).
         let fm = FileManager.default
         var found: [URL] = []
-        if let enumerator = fm.enumerator(
-            at: documentsURL,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) {
-            for case let url as URL in enumerator {
-                if audioExtensions.contains(url.pathExtension.lowercased()) {
+        var stack = [documentsURL]
+        while let dir = stack.popLast() {
+            guard let entries = try? fm.contentsOfDirectory(
+                at: dir,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            for url in entries {
+                let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+                if isDir {
+                    stack.append(url)
+                } else if audioExtensions.contains(url.pathExtension.lowercased()) {
                     found.append(url)
                 }
             }
@@ -195,6 +210,24 @@ final class LibraryStore: ObservableObject {
     #endif
 
     // MARK: - Collections
+    /// Resolve stored recent-search items against the live library for rendering.
+    /// Unresolvable ids (deleted files, etc.) are skipped, not shown as dead rows.
+    func resolve(_ items: [RecentSearchItem]) -> [ResolvedRecent] {
+        items.compactMap { item in
+            switch item {
+            case .track(let id):
+                return tracksByID[id].map(ResolvedRecent.track)
+            case .album(let id):
+                return albums.first { $0.id == id }.map(ResolvedRecent.album)
+            case .artist(let name):
+                return artists.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+                    .map(ResolvedRecent.artist)
+            case .query(let text):
+                return .query(text)
+            }
+        }
+    }
+
     private func rebuildCollections() {
         tracksByID = Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let byAlbum = Dictionary(grouping: tracks) { "\($0.album)\u{1}\($0.artist)" }
@@ -252,14 +285,38 @@ final class LibraryStore: ObservableObject {
 
     private func copyIntoLibrary(_ source: URL) -> String? {
         let fm = FileManager.default
-        let destination = documentsURL.appendingPathComponent(source.lastPathComponent)
+        let name = source.lastPathComponent
+        var destination = documentsURL.appendingPathComponent(name)
+        let srcSize = (try? source.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
+        if fm.fileExists(atPath: destination.path) {
+            let dstSize = (try? destination.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
+            // Same name + same size → the same file is already in the library.
+            // Reuse it so importing a song into a second playlist doesn't duplicate
+            // it (both playlists just share the one id). Previously we overwrote,
+            // which silently replaced a different same-named song with this one.
+            if let s = srcSize, s == dstSize { return destination.lastPathComponent }
+            // Same name, genuinely different file → keep both under a unique name.
+            destination = uniqueDestination(for: name)
+        }
         do {
-            if fm.fileExists(atPath: destination.path) { try? fm.removeItem(at: destination) }
             try fm.copyItem(at: source, to: destination)
             return destination.lastPathComponent
         } catch {
-            print("Import failed for \(source.lastPathComponent): \(error)")
+            print("Import failed for \(name): \(error)")
             return nil
+        }
+    }
+
+    private func uniqueDestination(for name: String) -> URL {
+        let ns = name as NSString
+        let base = ns.deletingPathExtension
+        let ext = ns.pathExtension
+        var n = 2
+        while true {
+            let candidate = documentsURL.appendingPathComponent(
+                ext.isEmpty ? "\(base) \(n)" : "\(base) \(n).\(ext)")
+            if !FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+            n += 1
         }
     }
 

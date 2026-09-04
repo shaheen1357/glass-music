@@ -19,6 +19,7 @@ final class PlayerEngine {
     var repeatMode: RepeatMode = .off
     var isShuffled = false
     var sleepTimerMinutes: Int? = nil
+    private(set) var sleepEndDate: Date? = nil    // for a live countdown in the UI
     var sleepAtTrackEnd = false
 
     // MARK: Audio engine graph  (playerNode -> eq -> normGain -> mainMixer -> output)
@@ -248,7 +249,10 @@ final class PlayerEngine {
     private func updateCurrentTime() {
         guard sampleRate > 0 else { return }
         currentTime = Double(currentFrame) / sampleRate
-        refreshNowPlayingElapsed()
+        // Don't rewrite Now Playing elapsed/rate every tick — the system
+        // extrapolates position between discrete writes, and per-tick writes get
+        // throttled and desync the lock screen in long background sessions. We set
+        // elapsed on discrete events only (play / pause / seek / track change).
     }
 
     // MARK: - Playback control
@@ -262,6 +266,21 @@ final class PlayerEngine {
             currentIndex = index
         }
         startCurrent()
+    }
+
+    /// Start a fresh context in listed order (shuffle off). Use for "Play".
+    func playInOrder(_ tracks: [Track], startAt index: Int = 0) {
+        isShuffled = false
+        play(tracks: tracks, startAt: index)
+    }
+
+    /// Start a fresh context shuffled (shuffle on), from a random first track.
+    /// Use for "Shuffle" buttons — sets the mode and plays in one shot instead of
+    /// toggling shuffle on the outgoing queue first (which disturbed it needlessly).
+    func playShuffled(_ tracks: [Track]) {
+        guard !tracks.isEmpty else { return }
+        isShuffled = true
+        play(tracks: tracks, startAt: Int.random(in: 0..<tracks.count))
     }
 
     private func startCurrent() {
@@ -389,7 +408,10 @@ final class PlayerEngine {
         guard audioFile != nil, sampleRate > 0, seconds.isFinite else { return }
         let wasPlaying = isPlaying
         let clamped = max(0, min(seconds, Double(audioLengthSamples) / sampleRate))
-        let target = min(AVAudioFramePosition(clamped * sampleRate), audioLengthSamples)
+        // Never land exactly on the last frame: scheduleSegment(from: length) has
+        // 0 frames and no completion fires, which left playback frozen in a
+        // "playing" state (e.g. dragging the scrubber fully to the end).
+        let target = min(AVAudioFramePosition(clamped * sampleRate), max(0, audioLengthSamples - 1))
         seekFrame = target
         currentTime = Double(target) / sampleRate
 
@@ -450,8 +472,15 @@ final class PlayerEngine {
         if isShuffled {
             applyShuffle(keeping: currentIndex)
         } else {
-            queue = originalQueue
-            currentIndex = queue.firstIndex(of: current) ?? 0
+            // Restore the pre-shuffle order — but only if the current track is
+            // part of it. If it was queued after play() (Play Next / Add to
+            // Queue) it isn't in originalQueue; keep the live queue rather than
+            // jump currentIndex to 0 and show a different track than what's
+            // actually playing.
+            if let idx = originalQueue.firstIndex(of: current) {
+                queue = originalQueue
+                currentIndex = idx
+            }
         }
     }
 
@@ -513,11 +542,13 @@ final class PlayerEngine {
     func startSleepTimer(minutes: Int) {
         cancelSleepTimer()
         sleepTimerMinutes = minutes
+        sleepEndDate = Date().addingTimeInterval(Double(minutes) * 60)
         sleepTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(Double(minutes) * 60))
             guard let self, !Task.isCancelled else { return }
             self.pause()
             self.sleepTimerMinutes = nil
+            self.sleepEndDate = nil
             self.sleepTask = nil
         }
     }
@@ -531,13 +562,8 @@ final class PlayerEngine {
         sleepTask?.cancel()
         sleepTask = nil
         sleepTimerMinutes = nil
+        sleepEndDate = nil
         sleepAtTrackEnd = false
-    }
-
-    var sleepStatusText: String {
-        if let minutes = sleepTimerMinutes { return "\(minutes) min" }
-        if sleepAtTrackEnd { return "End of Track" }
-        return "Off"
     }
 
     // MARK: - Equalizer

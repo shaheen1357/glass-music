@@ -1,20 +1,48 @@
 import SwiftUI
 
+private enum SearchRoute: Hashable {
+    case album(String)      // album id
+    case artist(String)     // artist name
+}
+
 struct SearchView: View {
     @EnvironmentObject var library: LibraryStore
     @Environment(PlayerEngine.self) private var player
-    @EnvironmentObject var history: SearchHistoryStore
+    @EnvironmentObject var recents: RecentSearchStore
     @State private var query = ""
+    @State private var path = NavigationPath()
 
-    private var results: [Track] {
-        guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return [] }
-        let q = query.lowercased()
+    private var trimmed: String { query.trimmingCharacters(in: .whitespaces) }
+
+    private var trackResults: [Track] {
+        let q = trimmed.lowercased()
+        guard !q.isEmpty else { return [] }
         return library.tracks.filter {
             $0.title.lowercased().contains(q) ||
             $0.artist.lowercased().contains(q) ||
             $0.album.lowercased().contains(q)
         }
     }
+
+    private var albumResults: [Album] {
+        let q = trimmed.lowercased()
+        guard !q.isEmpty else { return [] }
+        return Array(library.albums.filter {
+            $0.title.lowercased().contains(q) || $0.artist.lowercased().contains(q)
+        }.prefix(8))
+    }
+
+    private var artistResults: [ArtistGroup] {
+        let q = trimmed.lowercased()
+        guard !q.isEmpty else { return [] }
+        return Array(library.artists.filter { $0.name.lowercased().contains(q) }.prefix(8))
+    }
+
+    private var noResults: Bool {
+        trackResults.isEmpty && albumResults.isEmpty && artistResults.isEmpty
+    }
+
+    private var resolvedRecents: [ResolvedRecent] { library.resolve(recents.items) }
 
     private struct BrowseCat: Identifiable {
         let id = UUID()
@@ -32,63 +60,174 @@ struct SearchView: View {
     ]
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             Group {
-                if query.isEmpty {
-                    emptyState
-                } else if results.isEmpty {
-                    ContentUnavailableView.search(text: query)
-                } else {
-                    List {
-                        ForEach(Array(results.enumerated()), id: \.element.id) { index, track in
-                            TrackRow(track: track, onPlay: { player.play(tracks: results, startAt: index) })
-                        }
+                if !trimmed.isEmpty {
+                    if noResults { ContentUnavailableView.search(text: query) }
+                    else { resultsList }
+                } else if !resolvedRecents.isEmpty {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 22) { recentSearches; browse }
+                            .padding(.vertical, 8)
                     }
-                    .listStyle(.plain)
+                } else {
+                    ScrollView { browse.padding(.vertical, 8) }
                 }
             }
             .navigationTitle("Search")
-            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Artists, Songs, Albums")
-            .onSubmit(of: .search) { history.add(query) }
-        }
-    }
-
-    private var emptyState: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                if !history.recent.isEmpty { recentSearches }
-                browse
+            .navigationDestination(for: SearchRoute.self) { route in
+                switch route {
+                case .album(let id):
+                    if let a = library.albums.first(where: { $0.id == id }) { AlbumDetailView(album: a) }
+                case .artist(let name):
+                    if let g = library.artists.first(where: { $0.name == name }) { ArtistDetailView(artist: g) }
+                }
             }
-            .padding(.vertical, 8)
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Artists, Songs, Albums")
+            .onSubmit(of: .search) {
+                if !trimmed.isEmpty { recents.add(.query(text: trimmed)) }
+            }
         }
     }
 
+    // MARK: - Results (Spotify-style: Artists / Albums / Songs)
+    private var resultsList: some View {
+        List {
+            if !artistResults.isEmpty {
+                Section("Artists") {
+                    ForEach(artistResults) { artist in
+                        Button {
+                            recents.add(.artist(name: artist.name))
+                            path.append(SearchRoute.artist(artist.name))
+                        } label: { entityRow(artwork: artist.tracks.first?.artworkData, artworkID: artist.id,
+                                             circular: true, title: artist.name, subtitle: "Artist") }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            if !albumResults.isEmpty {
+                Section("Albums") {
+                    ForEach(albumResults) { album in
+                        Button {
+                            recents.add(.album(id: album.id))
+                            path.append(SearchRoute.album(album.id))
+                        } label: { entityRow(artwork: album.artworkData, artworkID: album.id,
+                                             circular: false, title: album.title, subtitle: "Album • \(album.artist)") }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            if !trackResults.isEmpty {
+                Section("Songs") {
+                    ForEach(Array(trackResults.enumerated()), id: \.element.id) { index, track in
+                        TrackRow(track: track, onPlay: {
+                            player.play(tracks: trackResults, startAt: index)
+                            recents.add(.track(id: track.id))
+                        })
+                    }
+                }
+            }
+        }
+        .listStyle(.plain)
+    }
+
+    private func entityRow(artwork: Data?, artworkID: String, circular: Bool,
+                           title: String, subtitle: String) -> some View {
+        HStack(spacing: 12) {
+            ArtworkView(id: artworkID, data: artwork, corner: circular ? 24 : 6)
+                .frame(width: 48, height: 48)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).lineLimit(1).foregroundStyle(.primary)
+                Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer()
+        }
+        .contentShape(Rectangle())
+    }
+
+    // MARK: - Recent searches (rich rows)
     private var recentSearches: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text("Recent Searches").font(.title3.bold())
                 Spacer()
-                Button("Clear") { history.clear() }.font(.subheadline)
+                Button("Clear") { recents.clear() }.font(.subheadline)
             }
             .padding(.horizontal)
-            ForEach(history.recent, id: \.self) { q in
-                HStack(spacing: 12) {
-                    Image(systemName: "clock.arrow.circlepath").foregroundStyle(.secondary)
-                    Text(q).foregroundStyle(.primary)
-                    Spacer()
-                    Button { history.remove(q) } label: {
-                        Image(systemName: "xmark").font(.caption).foregroundStyle(.secondary)
-                            .frame(width: 40, height: 40).contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.leading)
-                .contentShape(Rectangle())
-                .onTapGesture { query = q }
+            ForEach(resolvedRecents) { recent in
+                recentRow(recent)
             }
         }
     }
 
+    private func recentRow(_ recent: ResolvedRecent) -> some View {
+        HStack(spacing: 12) {
+            recentLeading(recent)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(recentTitle(recent)).lineLimit(1).foregroundStyle(.primary)
+                if let sub = recentSubtitle(recent) {
+                    Text(sub).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+            Spacer()
+            Button { recents.remove(recent.id) } label: {
+                Image(systemName: "xmark").font(.caption).foregroundStyle(.secondary)
+                    .frame(width: 40, height: 40).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.leading)
+        .contentShape(Rectangle())
+        .onTapGesture { openRecent(recent) }
+    }
+
+    @ViewBuilder private func recentLeading(_ recent: ResolvedRecent) -> some View {
+        switch recent {
+        case .track(let t):
+            ArtworkView(id: t.id, data: t.artworkData, corner: 6).frame(width: 48, height: 48)
+        case .album(let a):
+            ArtworkView(id: a.id, data: a.artworkData, corner: 6).frame(width: 48, height: 48)
+        case .artist(let g):
+            ArtworkView(id: g.id, data: g.tracks.first?.artworkData, corner: 24).frame(width: 48, height: 48)
+        case .query:
+            Image(systemName: "clock.arrow.circlepath")
+                .foregroundStyle(.secondary).frame(width: 48, height: 48)
+        }
+    }
+
+    private func recentTitle(_ r: ResolvedRecent) -> String {
+        switch r {
+        case .track(let t):  return t.title
+        case .album(let a):  return a.title
+        case .artist(let g): return g.name
+        case .query(let q):  return q
+        }
+    }
+
+    private func recentSubtitle(_ r: ResolvedRecent) -> String? {
+        switch r {
+        case .track(let t): return "Song • \(t.artist)"
+        case .album(let a): return "Album • \(a.artist)"
+        case .artist:       return "Artist"
+        case .query:        return nil
+        }
+    }
+
+    private func openRecent(_ r: ResolvedRecent) {
+        switch r {
+        case .track(let t):
+            player.play(tracks: [t], startAt: 0)
+            recents.add(.track(id: t.id))
+        case .album(let a):
+            recents.add(.album(id: a.id)); path.append(SearchRoute.album(a.id))
+        case .artist(let g):
+            recents.add(.artist(name: g.name)); path.append(SearchRoute.artist(g.name))
+        case .query(let q):
+            query = q; recents.add(.query(text: q))
+        }
+    }
+
+    // MARK: - Browse
     private var browse: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Browse").font(.title3.bold()).padding(.horizontal)

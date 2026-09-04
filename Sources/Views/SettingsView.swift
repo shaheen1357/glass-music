@@ -5,24 +5,17 @@ struct SettingsView: View {
     @Environment(PlayerEngine.self) private var player
     @EnvironmentObject var library: LibraryStore
     @Environment(\.dismiss) private var dismiss
-    private let sleepChoices = [5, 10, 15, 30, 45, 60]
     @State private var showImport = false
 
     var body: some View {
         NavigationStack {
             List {
                 Section("Playback") {
-                    Menu {
-                        Button("Off") { player.cancelSleepTimer() }
-                        ForEach(sleepChoices, id: \.self) { m in
-                            Button("\(m) minutes") { player.startSleepTimer(minutes: m) }
-                        }
-                        Button("End of Track") { player.sleepAtEndOfTrack() }
-                    } label: {
+                    SleepTimerMenu {
                         HStack {
                             Label("Sleep Timer", systemImage: "moon.zzz").foregroundStyle(.primary)
                             Spacer()
-                            Text(player.sleepStatusText).foregroundStyle(.secondary)
+                            SleepStatusText().foregroundStyle(.secondary)
                         }
                     }
                 }

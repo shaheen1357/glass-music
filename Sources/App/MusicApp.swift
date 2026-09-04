@@ -6,7 +6,7 @@ struct MusicApp: App {
     @State private var player = PlayerEngine()
     @StateObject private var playlists = PlaylistStore()
     @StateObject private var stats = PlayStatsStore()
-    @StateObject private var searchHistory = SearchHistoryStore()
+    @StateObject private var recents = RecentSearchStore()
 
     var body: some Scene {
         WindowGroup {
@@ -15,7 +15,7 @@ struct MusicApp: App {
                 .environment(player)
                 .environmentObject(playlists)
                 .environmentObject(stats)
-                .environmentObject(searchHistory)
+                .environmentObject(recents)
                 .tint(Color.accentColor)
                 .task {
                     player.onPlay = { track in stats.recordPlay(track) }

@@ -484,15 +484,12 @@ struct PlayShuffleButtons: View {
     var body: some View {
         HStack(spacing: 12) {
             Button {
-                if player.isShuffled { player.toggleShuffle() }
-                player.play(tracks: tracks, startAt: 0)
+                player.playInOrder(tracks)
             } label: {
                 Label("Play", systemImage: "play.fill").frame(maxWidth: .infinity)
             }
             Button {
-                guard !tracks.isEmpty else { return }
-                if !player.isShuffled { player.toggleShuffle() }
-                player.play(tracks: tracks, startAt: Int.random(in: 0..<tracks.count))
+                player.playShuffled(tracks)
             } label: {
                 Label("Shuffle", systemImage: "shuffle").frame(maxWidth: .infinity)
             }
