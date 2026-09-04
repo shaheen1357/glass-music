@@ -4,6 +4,7 @@ struct RootView: View {
     @EnvironmentObject var player: PlayerEngine
     @EnvironmentObject var playlists: PlaylistStore
     @State private var showNowPlaying = false
+    @State private var selection = 0
 
     var body: some View {
         content
@@ -15,32 +16,31 @@ struct RootView: View {
             }
     }
 
+    // Selection is held here so the current tab survives the mini player
+    // appearing/disappearing (which otherwise rebuilds the TabView).
+    private var tabs: some View {
+        TabView(selection: $selection) {
+            Tab("Home", systemImage: "house.fill", value: 0) { HomeView() }
+            Tab("Library", systemImage: "square.stack.fill", value: 1) { LibraryView() }
+            Tab("Search", systemImage: "magnifyingglass", value: 2) { SearchView() }
+        }
+    }
+
     @ViewBuilder private var content: some View {
+        let hasTrack = player.currentTrack != nil
         if #available(iOS 26.0, *) {
-            // iOS 26: the value-based Tab API renders the floating Liquid Glass
-            // tab bar, and tabViewBottomAccessory docks the mini player above it
-            // (the exact pattern Apple Music uses). The previous build broke the
-            // tab bar because it paired tabViewBottomAccessory with the legacy
-            // .tabItem API — that mismatch hides the bar. The Tab API fixes it,
-            // and the system supplies Liquid Glass to the accessory for free.
-            TabView {
-                Tab("Home", systemImage: "house.fill") { HomeView() }
-                Tab("Library", systemImage: "square.stack.fill") { LibraryView() }
-                Tab("Search", systemImage: "magnifyingglass") { SearchView() }
-            }
-            .tabViewBottomAccessory {
-                if player.currentTrack != nil {
+            // Only attach the accessory when something is playing, otherwise
+            // iOS 26 shows an empty glass pill above the tab bar.
+            if hasTrack {
+                tabs.tabViewBottomAccessory {
                     MiniPlayerView(showNowPlaying: $showNowPlaying)
                 }
+            } else {
+                tabs
             }
         } else {
-            TabView {
-                Tab("Home", systemImage: "house.fill") { HomeView() }
-                Tab("Library", systemImage: "square.stack.fill") { LibraryView() }
-                Tab("Search", systemImage: "magnifyingglass") { SearchView() }
-            }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if player.currentTrack != nil {
+            tabs.safeAreaInset(edge: .bottom, spacing: 0) {
+                if hasTrack {
                     MiniPlayerView(showNowPlaying: $showNowPlaying)
                         .background(.ultraThinMaterial)
                         .overlay(alignment: .top) {

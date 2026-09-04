@@ -9,12 +9,20 @@ struct MiniPlayerView: View {
     var body: some View {
         if let track = player.currentTrack {
             HStack(spacing: 12) {
-                ArtworkView(data: track.artworkData, corner: 6).frame(width: 42, height: 42)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(track.title).font(.subheadline.weight(.medium)).lineLimit(1)
-                    Text(track.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Button {
+                    showNowPlaying = true
+                } label: {
+                    HStack(spacing: 12) {
+                        ArtworkView(data: track.artworkData, corner: 6).frame(width: 42, height: 42)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(track.title).font(.subheadline.weight(.medium)).lineLimit(1)
+                            Text(track.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Spacer(minLength: 4)
+                    }
+                    .contentShape(Rectangle())
                 }
-                Spacer(minLength: 4)
+                .buttonStyle(.plain)
                 Button { player.previous() } label: {
                     Image(systemName: "backward.fill")
                         .font(.title3).frame(width: 34, height: 40).contentShape(Rectangle())
@@ -43,8 +51,6 @@ struct MiniPlayerView: View {
                 }
                 .allowsHitTesting(false)
             }
-            .contentShape(Rectangle())
-            .onTapGesture { showNowPlaying = true }
         }
     }
 }

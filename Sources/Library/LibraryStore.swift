@@ -57,10 +57,13 @@ final class LibraryStore: ObservableObject {
 
     private func makeTrack(from url: URL) async -> Track? {
         let asset = AVURLAsset(url: url)
+        let ext = url.pathExtension.lowercased()
+        let fileBaseName = url.deletingPathExtension().lastPathComponent
 
-        var title = url.deletingPathExtension().lastPathComponent
+        var title = fileBaseName
         var artist = "Unknown Artist"
         var album = "Unknown Album"
+        var trackNumber = 0
         var duration: Double = 0
         var artworkData: Data?
         var dateAdded = Date.distantPast
@@ -74,6 +77,7 @@ final class LibraryStore: ObservableObject {
             if secs.isFinite && secs > 0 { duration = secs }
         }
 
+        // AVFoundation reads MP3/MP4/etc tags — but not FLAC Vorbis comments.
         if let metadata = try? await asset.load(.commonMetadata) {
             for item in metadata {
                 guard let key = item.commonKey else { continue }
@@ -94,13 +98,34 @@ final class LibraryStore: ObservableObject {
             }
         }
 
+        // FLAC: parse Vorbis comments + embedded artwork ourselves (off the main
+        // actor so a big library doesn't stall the UI while scanning).
+        if ext == "flac",
+           let tags = await Task.detached(priority: .utility, operation: { FLACMetadata.read(url: url) }).value {
+            if let t = tags.title, !t.isEmpty { title = t }
+            if let a = tags.artist, !a.isEmpty { artist = a }
+            if let al = tags.album, !al.isEmpty { album = al }
+            if let n = tags.trackNumber { trackNumber = n }
+            if artworkData == nil, let pic = tags.artwork { artworkData = Self.thumbnail(from: pic) }
+        }
+
+        // Fallback for untagged files named "Artist - Title".
+        if artist == "Unknown Artist", let range = fileBaseName.range(of: " - ") {
+            let a = fileBaseName[fileBaseName.startIndex..<range.lowerBound].trimmingCharacters(in: .whitespaces)
+            let t = fileBaseName[range.upperBound...].trimmingCharacters(in: .whitespaces)
+            if !a.isEmpty, !t.isEmpty {
+                artist = a
+                if title == fileBaseName { title = t }   // only if tags gave no real title
+            }
+        }
+
         return Track(
             id: url.path,
             url: url,
             title: title,
             artist: artist,
             album: album,
-            trackNumber: 0,
+            trackNumber: trackNumber,
             duration: duration,
             artworkData: artworkData,
             dateAdded: dateAdded

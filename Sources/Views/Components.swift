@@ -155,9 +155,6 @@ struct TrackRow: View {
             }
             .buttonStyle(.plain)
         }
-        .contextMenu {
-            TrackActions(track: track, onPlay: onPlay, onAddToPlaylist: { showAdd = true })
-        }
         .sheet(isPresented: $showAdd) {
             AddToPlaylistView(track: track).environmentObject(playlists)
         }
