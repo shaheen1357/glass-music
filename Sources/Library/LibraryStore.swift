@@ -217,11 +217,6 @@ final class LibraryStore: ObservableObject {
             switch item {
             case .track(let id):
                 return tracksByID[id].map(ResolvedRecent.track)
-            case .album(let id):
-                return albums.first { $0.id == id }.map(ResolvedRecent.album)
-            case .artist(let name):
-                return artists.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
-                    .map(ResolvedRecent.artist)
             case .query(let text):
                 return .query(text)
             }

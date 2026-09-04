@@ -281,13 +281,21 @@ final class PlayerEngine: ObservableObject {
         play(tracks: tracks, startAt: index)
     }
 
-    /// Start a fresh context shuffled (shuffle on), from a random first track.
-    /// Use for "Shuffle" buttons — sets the mode and plays in one shot instead of
-    /// toggling shuffle on the outgoing queue first (which disturbed it needlessly).
+    /// Shuffle these tracks. If the song currently playing is part of them,
+    /// shuffle the queue AROUND it — keep it playing — instead of discarding it
+    /// and jumping to a new random track. Only a genuinely new context starts
+    /// fresh from a random track.
     func playShuffled(_ tracks: [Track]) {
         guard !tracks.isEmpty else { return }
         isShuffled = true
-        play(tracks: tracks, startAt: Int.random(in: 0..<tracks.count))
+        if audioFile != nil, let current = currentTrack, tracks.contains(current) {
+            originalQueue = tracks
+            queue = tracks
+            if let idx = queue.firstIndex(of: current) { applyShuffle(keeping: idx) }
+            updateNowPlayingInfo()   // no startCurrent(): the current track keeps playing
+        } else {
+            play(tracks: tracks, startAt: Int.random(in: 0..<tracks.count))
+        }
     }
 
     private func startCurrent() {
