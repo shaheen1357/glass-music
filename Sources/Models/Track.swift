@@ -1,7 +1,7 @@
 import Foundation
 import UIKit
 
-struct Track: Identifiable, Hashable {
+struct Track: Identifiable, Hashable, Codable, Sendable {
     let id: String          // stable id = file path
     let url: URL
     var title: String
