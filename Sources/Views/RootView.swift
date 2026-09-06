@@ -27,13 +27,20 @@ struct RootView: View {
     }
 
     private var content: some View {
-        tabs.safeAreaInset(edge: .bottom, spacing: 0) {
+        // Float the mini player ABOVE the tab bar. On iOS 16 a bottom
+        // safeAreaInset on a TabView sits in the same region as the tab bar and
+        // hides it; an overlay padded up by the tab-bar height keeps both visible.
+        // iPhone 8 has a home button → standard 49pt tab bar, no bottom inset.
+        ZStack(alignment: .bottom) {
+            tabs
             if player.currentTrack != nil {
                 MiniPlayerView(showNowPlaying: $showNowPlaying, clock: player.clock)
+                    .frame(maxWidth: .infinity)
                     .background(.ultraThinMaterial)
                     .overlay(alignment: .top) {
                         Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 0.5)
                     }
+                    .padding(.bottom, 49)
             }
         }
     }
