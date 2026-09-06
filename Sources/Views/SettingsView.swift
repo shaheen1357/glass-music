@@ -52,7 +52,7 @@ struct SettingsView: View {
                     Button { showImport = true } label: {
                         Label("Import Songs", systemImage: "square.and.arrow.down")
                     }
-                    Button { Task { await library.scan() } } label: {
+                    Button { Task { await library.scan(force: true) } } label: {
                         Label("Rescan Library", systemImage: "arrow.clockwise")
                     }
                 }

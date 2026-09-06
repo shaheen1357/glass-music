@@ -163,11 +163,13 @@ final class PlayerEngine: ObservableObject {
             stopDisplayTimer()
             updateNowPlayingInfo()
         case .ended:
+            // Do NOT auto-resume, even when iOS sends .shouldResume. After a call /
+            // reel / other app grabs audio, playback stays paused until the user
+            // presses play. needsReschedule makes that manual resume pick up from
+            // where it stopped (the render clock is gone after an interruption).
             isSuspended = false
-            if let optRaw = info[AVAudioSessionInterruptionOptionKey] as? UInt,
-               AVAudioSession.InterruptionOptions(rawValue: optRaw).contains(.shouldResume) {
-                restartAndResume()
-            }
+            needsReschedule = true
+            updateNowPlayingInfo()
         @unknown default:
             break
         }

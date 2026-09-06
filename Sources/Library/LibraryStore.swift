@@ -20,29 +20,70 @@ final class LibraryStore: ObservableObject {
     }
 
     // MARK: - Scanning
-    func scan() async {
+    /// Incremental, cache-backed scan. On launch the cached library from the last
+    /// session shows instantly; then only NEW files are parsed and deleted ones
+    /// drop away. `force: true` re-parses everything (Settings → Rescan).
+    func scan(force: Bool = false) async {
         isScanning = true
         defer { isScanning = false }
 
+        // Instant: paint last session's library from the cache before touching disk.
+        if !force, tracks.isEmpty, let cached = await readCache() {
+            tracks = cached
+            rebuildCollections()
+        }
+
+        // Reuse already-known tracks by id so we don't re-parse them; only new
+        // files hit makeTrack. Rebuilding from the live file list also drops any
+        // tracks whose files are gone.
+        let known = force ? [:] : Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let urls = audioFileURLs()
         var result: [Track] = []
+        var seenIDs = Set<String>()
         for url in urls {
-            if let track = await makeTrack(from: url) {
+            let id = url.lastPathComponent
+            guard seenIDs.insert(id).inserted else { continue }   // dedup same-named files
+            if let c = known[id] {
+                // Known file — keep cached metadata, but point at the CURRENT url
+                // (the container path changes on reinstall).
+                result.append(Track(id: c.id, url: url, title: c.title, artist: c.artist,
+                                    album: c.album, trackNumber: c.trackNumber, duration: c.duration,
+                                    artworkData: c.artworkData, dateAdded: c.dateAdded, lyrics: c.lyrics))
+            } else if let track = await makeTrack(from: url) {
                 result.append(track)
             }
         }
         result.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-        // Dedup by id. The id is the filename, so two same-named files in
-        // different subfolders would otherwise share an id — duplicate ids in a
-        // ForEach/List (keyed on id) corrupt row identity. tracksByID already
-        // keeps only the first, so drop the rest here too and stay consistent.
-        var seenIDs = Set<String>()
-        result = result.filter { seenIDs.insert($0.id).inserted }
         #if targetEnvironment(simulator)
         if result.isEmpty { result = Self.demoTracks() }
         #endif
         tracks = result
         rebuildCollections()
+        saveCache(result)
+    }
+
+    // MARK: - Library cache (instant launch; survives sessions)
+    private var cacheURL: URL {
+        let base = (try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                                 appropriateFor: nil, create: true)) ?? documentsURL
+        return base.appendingPathComponent("library-cache.json")
+    }
+
+    private func readCache() async -> [Track]? {
+        let url = cacheURL
+        return await Task.detached(priority: .userInitiated) {
+            guard let data = try? Data(contentsOf: url) else { return nil }
+            return try? JSONDecoder().decode([Track].self, from: data)
+        }.value
+    }
+
+    private func saveCache(_ tracks: [Track]) {
+        let url = cacheURL
+        Task.detached(priority: .utility) {
+            if let data = try? JSONEncoder().encode(tracks) {
+                try? data.write(to: url, options: .atomic)
+            }
+        }
     }
 
     private func audioFileURLs() -> [URL] {
@@ -280,6 +321,14 @@ final class LibraryStore: ObservableObject {
 
     private func copyIntoLibrary(_ source: URL) -> String? {
         let fm = FileManager.default
+        // Already inside the app's Music folder (even in a subfolder)? It's already
+        // in the library — reference it in place, never copy. Only files from
+        // outside (iCloud Drive, Downloads, …) get copied in. This is what stops
+        // "import from the Music folder" leaving a second flat copy on disk.
+        let docsPath = documentsURL.resolvingSymlinksInPath().path
+        if source.resolvingSymlinksInPath().path.hasPrefix(docsPath + "/") {
+            return source.lastPathComponent
+        }
         let name = source.lastPathComponent
         var destination = documentsURL.appendingPathComponent(name)
         let srcSize = (try? source.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
