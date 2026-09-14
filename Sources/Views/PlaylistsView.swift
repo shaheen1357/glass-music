@@ -213,7 +213,7 @@ struct PlaylistDetailView: View {
     private var playlist: Playlist? { playlists.playlists.first { $0.id == playlistID } }
     private var storedTracks: [Track] { playlist.map { playlists.tracks(for: $0, in: library) } ?? [] }
 
-    private var canReorder: Bool { sortMode == .custom && query.trimmingCharacters(in: .whitespaces).isEmpty }
+    private var canReorder: Bool { sortMode == .custom && playlist?.kind != .liked && query.trimmingCharacters(in: .whitespaces).isEmpty }
 
     private var displayedTracks: [Track] {
         var items = storedTracks
@@ -226,7 +226,8 @@ struct PlaylistDetailView: View {
             }
         }
         switch sortMode {
-        case .custom: break
+        case .custom:
+            if playlist?.kind == .liked { items.reverse() }   // Liked Songs: newest like on top
         case .title: items.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
         case .artist: items.sort { $0.artist.localizedCaseInsensitiveCompare($1.artist) == .orderedAscending }
         case .album: items.sort { $0.album.localizedCaseInsensitiveCompare($1.album) == .orderedAscending }

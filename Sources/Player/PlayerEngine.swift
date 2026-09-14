@@ -290,11 +290,15 @@ final class PlayerEngine: ObservableObject {
     func playShuffled(_ tracks: [Track]) {
         guard !tracks.isEmpty else { return }
         isShuffled = true
-        if audioFile != nil, let current = currentTrack, tracks.contains(current) {
+        // Never interrupt: if a song is playing, keep it and queue the shuffled
+        // playlist to follow it. Only start fresh when nothing is playing.
+        if audioFile != nil, let current = currentTrack {
+            var rest = tracks.filter { $0.id != current.id }
+            rest.shuffle()
             originalQueue = tracks
-            queue = tracks
-            if let idx = queue.firstIndex(of: current) { applyShuffle(keeping: idx) }
-            updateNowPlayingInfo()   // no startCurrent(): the current track keeps playing
+            queue = [current] + rest
+            currentIndex = 0
+            updateNowPlayingInfo()
         } else {
             play(tracks: tracks, startAt: Int.random(in: 0..<tracks.count))
         }
