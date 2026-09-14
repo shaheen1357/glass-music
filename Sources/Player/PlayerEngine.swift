@@ -22,14 +22,37 @@ final class PlayerEngine {
     private(set) var sleepEndDate: Date? = nil    // for a live countdown in the UI
     var sleepAtTrackEnd = false
 
-    // MARK: Audio engine graph  (playerNode -> eq -> normGain -> mainMixer -> output)
+    // MARK: Track transitions (user-facing)
+    private(set) var gaplessEnabled = true         // remove the silence between tracks
+    private(set) var crossfadeDuration: Double = 0 // seconds (0...12); 0 = off
+
+    // MARK: Audio engine graph
+    // Two player chains feed a shared submixer so one track can hand off into the
+    // next without tearing down the graph (crossfade + gapless):
+    //     playerA -> normA -\
+    //                        +-> subMixer -> eq -> mainMixer -> output
+    //     playerB -> normB -/
+    // Exactly one chain is "active" at a time: it owns the queue position and the
+    // render clock. The other chain is idle except during a brief transition.
     private let engine = AVAudioEngine()
-    private let playerNode = AVAudioPlayerNode()
-    private var currentFormat: AVAudioFormat?
-    private let eq = AVAudioUnitEQ(numberOfBands: 10)
+    private let playerA = AVAudioPlayerNode()
+    private let playerB = AVAudioPlayerNode()
     // Per-track normalization gain. A 0-band EQ is just a globalGain node that can
-    // boost as well as attenuate (playerNode.volume can't exceed 1.0).
-    private let normGain = AVAudioUnitEQ(numberOfBands: 0)
+    // boost as well as attenuate (a player node's volume can't exceed 1.0).
+    private let normA = AVAudioUnitEQ(numberOfBands: 0)
+    private let normB = AVAudioUnitEQ(numberOfBands: 0)
+    private let subMixer = AVAudioMixerNode()
+    private let eq = AVAudioUnitEQ(numberOfBands: 10)
+    private var currentFormat: AVAudioFormat?   // active track's file format
+    private var graphFormat: AVAudioFormat?     // fixed subMixer -> eq -> mainMixer format
+
+    // Active-chain indirection. All the existing single-node logic (seek, pause,
+    // resume, the render clock) keeps working unchanged by talking to `playerNode`.
+    private var activeIsA = true
+    private var playerNode: AVAudioPlayerNode { activeIsA ? playerA : playerB }
+    private var idleNode:   AVAudioPlayerNode { activeIsA ? playerB : playerA }
+    private var activeNorm: AVAudioUnitEQ { activeIsA ? normA : normB }
+    private var idleNorm:   AVAudioUnitEQ { activeIsA ? normB : normA }
 
     // MARK: EQ (user-facing state; tracked by @Observable so the UI reflects it)
     static let eqBandLabels = ["32 Hz", "64 Hz", "125 Hz", "250 Hz", "500 Hz", "1 kHz", "2 kHz", "4 kHz", "8 kHz", "16 kHz"]
@@ -63,6 +86,11 @@ final class PlayerEngine {
     private var isSuspended = false                        // true across interruption / device-loss
     private var needsReschedule = false                    // set after a media-services reset
     private var displayTimer: Timer?
+    private var isTransitioning = false                     // a gapless/crossfade hand-off is in flight
+    private var fadeTask: Task<Void, Never>?               // drives the volume ramp / commit
+    private var incomingGen = 0                            // completion token for the incoming chain
+    private var pendingIncomingFile: AVAudioFile?          // the incoming track, awaiting commit
+    private var pendingNext: Track?
 
     private var originalQueue: [Track] = []
     private var sleepTask: Task<Void, Never>?
@@ -79,12 +107,16 @@ final class PlayerEngine {
     }
 
     init() {
-        engine.attach(playerNode)
+        engine.attach(playerA)
+        engine.attach(playerB)
+        engine.attach(normA)
+        engine.attach(normB)
+        engine.attach(subMixer)
         engine.attach(eq)
-        engine.attach(normGain)
         setupEQBands()
         loadEQSettings()
         loadNormalizationSetting()
+        loadTransitionSettings()
         configureSession()
         setupRemoteCommands()
     }
@@ -127,20 +159,45 @@ final class PlayerEngine {
         try engine.start()
     }
 
-    /// Connect (or reconnect) the graph for a given file format. The player node
-    /// must be stopped before calling this.
-    private func wire(_ format: AVAudioFormat) {
-        engine.connect(playerNode, to: eq, format: format)
-        engine.connect(eq, to: normGain, format: format)
-        engine.connect(normGain, to: engine.mainMixerNode, format: format)
+    /// Canonical format for the shared tail (subMixer -> eq -> mainMixer). The
+    /// submixer sample-rate-converts each track's native input to this, so two
+    /// tracks of different rates can overlap during a crossfade. iPhone output runs
+    /// at the session rate (typically 48 kHz), so this matches what the old
+    /// single-node graph fed the hardware — no extra quality loss.
+    private func canonicalFormat() -> AVAudioFormat {
+        let sr = AVAudioSession.sharedInstance().sampleRate
+        return AVAudioFormat(standardFormatWithSampleRate: sr > 0 ? sr : 48_000, channels: 2)
+            ?? AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)!
     }
 
+    /// Wire the fixed tail. It never carries a specific track, so it can stay put
+    /// across track changes.
+    private func wireFixedChain() {
+        let fmt = canonicalFormat()
+        graphFormat = fmt
+        engine.connect(subMixer, to: eq, format: fmt)
+        engine.connect(eq, to: engine.mainMixerNode, format: fmt)
+    }
+
+    /// Wire one player chain (node -> norm -> subMixer) at a file's native format.
+    /// The node must be stopped.
+    private func connectInput(_ node: AVAudioPlayerNode, _ norm: AVAudioUnitEQ, format: AVAudioFormat) {
+        engine.connect(node, to: norm, format: format)
+        engine.connect(norm, to: subMixer, format: format)
+    }
+
+    /// Prepare the graph to play the active track's file. The active node must be
+    /// stopped before calling this.
     private func connectGraph(format: AVAudioFormat) {
-        if let cur = currentFormat,
-           cur.sampleRate == format.sampleRate,
-           cur.channelCount == format.channelCount { return }
+        if graphFormat == nil { wireFixedChain() }
         currentFormat = format
-        wire(format)
+        connectInput(playerNode, activeNorm, format: format)
+    }
+
+    /// Re-establish the whole graph after a route / media-services change.
+    private func rewire() {
+        wireFixedChain()
+        if let f = currentFormat { connectInput(playerNode, activeNorm, format: f) }
     }
 
     // MARK: - Interruption / route / config handling
@@ -148,6 +205,7 @@ final class PlayerEngine {
         guard let info = note.userInfo,
               let raw = info[AVAudioSessionInterruptionTypeKey] as? UInt,
               let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+        abortTransition()
         switch type {
         case .began:
             isSuspended = true                 // Core Audio already stopped the engine
@@ -189,23 +247,27 @@ final class PlayerEngine {
     private func handleMediaServicesReset() {
         // Everything is invalid. Reuse the SAME engine instance (a new one would
         // crash on re-attach). Reactivate the session, reconnect, leave paused.
+        abortTransition()
         activateSession()
         pausedFrame = currentFrame
         isPlaying = false
         stopDisplayTimer()
-        if let fmt = currentFormat { wire(fmt); reapplyGraphParams() }
+        rewire()
+        reapplyGraphParams()
         needsReschedule = true
         updateNowPlayingInfo()
     }
 
     private func restartAndResume() {
+        abortTransition()
         guard audioFile != nil, sampleRate > 0 else { return }
         // currentTime is the last position the timer published; the render clock
         // may already be gone by the time a config-change notification arrives.
         let resumeFrame = min(max(0, AVAudioFramePosition(max(0, currentTime) * sampleRate)), audioLengthSamples)
         do {
             activateSession()
-            if let fmt = currentFormat { wire(fmt); reapplyGraphParams() }
+            rewire()
+            reapplyGraphParams()
             try startEngineIfNeeded()
             playerNode.stop()
             seekFrame = resumeFrame
@@ -251,6 +313,7 @@ final class PlayerEngine {
     private func updateCurrentTime() {
         guard sampleRate > 0 else { return }
         currentTime = Double(currentFrame) / sampleRate
+        maybeBeginTransition()
         // Don't rewrite Now Playing elapsed/rate every tick — the system
         // extrapolates position between discrete writes, and per-tick writes get
         // throttled and desync the lock screen in long background sessions. We set
@@ -260,6 +323,7 @@ final class PlayerEngine {
     // MARK: - Playback control
     func play(tracks: [Track], startAt index: Int) {
         guard !tracks.isEmpty, tracks.indices.contains(index) else { return }
+        abortTransition()
         originalQueue = tracks
         queue = tracks
         if isShuffled {
@@ -282,6 +346,7 @@ final class PlayerEngine {
     /// fresh from a random track.
     func playShuffled(_ tracks: [Track]) {
         guard !tracks.isEmpty else { return }
+        abortTransition()
         isShuffled = true
         // Never interrupt: if a song is playing, keep it and queue the shuffled
         // playlist to follow it. Only start fresh when nothing is playing.
@@ -302,6 +367,9 @@ final class PlayerEngine {
         onPlay?(track)
         isSuspended = false
         needsReschedule = false
+        idleNode.stop()                         // clear any leftover transition node
+        idleNode.volume = 1
+        playerNode.volume = 1
         playerNode.stop()                       // fires a stale completion...
         scheduleGeneration &+= 1                // ...neutralize it even if the load below fails
 
@@ -352,6 +420,14 @@ final class PlayerEngine {
     }
 
     private func segmentCompleted(_ gen: Int) {
+        if isTransitioning {
+            // During a hand-off, scheduleGeneration still belongs to the OUTGOING
+            // node; its completion firing means the outgoing track truly ended, so
+            // commit now (covers the case where its end beats the fadeTask timer).
+            // The incoming node's own token differs, so it's ignored here.
+            if gen == scheduleGeneration { commitPendingTransition() }
+            return
+        }
         guard gen == scheduleGeneration else { return }   // stale (seek / next / stop)
         trackDidEnd()
     }
@@ -388,7 +464,7 @@ final class PlayerEngine {
         if isPlaying { pause() } else { resume() }
     }
 
-    func next() { advance(auto: false) }
+    func next() { abortTransition(); advance(auto: false) }
 
     private func advance(auto: Bool) {
         guard !queue.isEmpty else { return }
@@ -406,6 +482,7 @@ final class PlayerEngine {
 
     func previous() {
         guard !queue.isEmpty else { return }
+        abortTransition()
         if currentTime > 3 {
             seek(to: 0)
             return
@@ -420,6 +497,7 @@ final class PlayerEngine {
 
     func seek(to seconds: Double) {
         guard audioFile != nil, sampleRate > 0, seconds.isFinite else { return }
+        abortTransition()
         let wasPlaying = isPlaying
         let clamped = max(0, min(seconds, Double(audioLengthSamples) / sampleRate))
         // Never land exactly on the last frame: scheduleSegment(from: length) has
@@ -445,6 +523,7 @@ final class PlayerEngine {
     }
 
     private func resume() {
+        abortTransition()
         if audioFile == nil {
             if currentTrack != nil { startCurrent() }
             return
@@ -471,6 +550,7 @@ final class PlayerEngine {
     }
 
     private func pause() {
+        abortTransition()
         pausedFrame = currentFrame               // capture the live position first
         playerNode.pause()
         isPlaying = false
@@ -479,8 +559,210 @@ final class PlayerEngine {
         updateNowPlayingInfo()
     }
 
+    // MARK: - Track transitions (gapless / crossfade)
+    func setGaplessEnabled(_ on: Bool) {
+        gaplessEnabled = on
+        UserDefaults.standard.set(on, forKey: "transition.gapless")
+    }
+
+    func setCrossfadeDuration(_ seconds: Double) {
+        crossfadeDuration = max(0, min(12, seconds))
+        UserDefaults.standard.set(crossfadeDuration, forKey: "transition.crossfade")
+    }
+
+    private func loadTransitionSettings() {
+        let d = UserDefaults.standard
+        gaplessEnabled = d.object(forKey: "transition.gapless") == nil ? true : d.bool(forKey: "transition.gapless")
+        crossfadeDuration = min(12, max(0, d.double(forKey: "transition.crossfade")))
+    }
+
+    /// The track that will play after the current one (honours repeat-all wrap).
+    private func upcomingIndex() -> Int? {
+        if currentIndex + 1 < queue.count { return currentIndex + 1 }
+        if repeatMode == .all, !queue.isEmpty { return 0 }
+        return nil
+    }
+    private func upcomingTrack() -> Track? {
+        guard let i = upcomingIndex() else { return nil }
+        return queue[i]
+    }
+
+    /// Called from the display clock as the active track nears its end. Starts the
+    /// next track on the idle chain — overlapping (crossfade) or scheduled exactly
+    /// at the boundary (gapless) — without tearing down the active chain.
+    private func maybeBeginTransition() {
+        guard !isTransitioning, isPlaying, audioFile != nil, sampleRate > 0 else { return }
+        guard repeatMode != .one else { return }          // repeat-one loops in place
+        guard let next = upcomingTrack() else { return }   // nothing to hand off to
+        let remaining = duration - currentTime
+        guard remaining.isFinite else { return }
+        if crossfadeDuration > 0 {
+            if remaining <= crossfadeDuration && remaining > 0.05 {
+                beginTransition(to: next, fade: crossfadeDuration)
+            }
+        } else if gaplessEnabled {
+            // Arm well ahead of the boundary: the incoming track is scheduled to
+            // start at an exact host time, so arming early costs nothing and gives
+            // the (coalesced-in-background) timer plenty of slack to catch it.
+            if remaining <= 2.0 && remaining > 0.05 {
+                beginTransition(to: next, fade: 0)
+            }
+        }
+    }
+
+    private func beginTransition(to next: Track, fade: Double) {
+        guard let renderTime = playerNode.lastRenderTime, playerNode.isPlaying else { return }
+        // Gapless needs a valid host clock for a sample-accurate join; without it,
+        // do nothing and let the plain end-of-track path advance (a tiny gap). We
+        // haven't touched any state yet, so the active node's completion is intact.
+        if fade == 0 && !renderTime.isHostTimeValid { return }
+
+        let incoming: AVAudioFile
+        do { incoming = try AVAudioFile(forReading: next.url) }
+        catch { print("Transition load failed: \(error)"); return }
+        guard incoming.length > 0 else { return }
+
+        // Playhead from the SAME render snapshot that seeds the gapless start time,
+        // so the scheduled join lands exactly on the outgoing track's last sample
+        // (mixing two snapshots could leave a sub-ms overlap/click at the seam).
+        let rendered = playerNode.playerTime(forNodeTime: renderTime)?.sampleTime ?? 0
+        let playhead = max(0, min(seekFrame + rendered, audioLengthSamples))
+        let framesRemaining = max(0, audioLengthSamples - playhead)
+        let secondsRemaining = Double(framesRemaining) / sampleRate
+        guard secondsRemaining > 0.02 else { return }
+
+        isTransitioning = true
+
+        // Prepare the idle chain for the incoming track.
+        idleNode.stop()
+        idleNode.volume = fade > 0 ? 0 : 1
+        connectInput(idleNode, idleNorm, format: incoming.processingFormat)
+        idleNorm.globalGain = normalizationGain(for: next)
+        if normalizationEnabled, !LoudnessService.hasMeasurement(for: next) {
+            Task { await LoudnessService.analyzeAndCache(next) }
+        }
+
+        // Give the incoming chain its OWN completion token, leaving the active
+        // node's token untouched. That way the active node's own end-of-data
+        // completion stays valid (harmlessly ignored while isTransitioning is set,
+        // and it correctly resumes duty if the hand-off is aborted). The token is
+        // promoted to scheduleGeneration at commit.
+        let gen = scheduleGeneration &+ 1
+        incomingGen = gen
+        pendingIncomingFile = incoming
+        pendingNext = next
+        idleNode.scheduleSegment(
+            incoming, startingFrame: 0, frameCount: AVAudioFrameCount(incoming.length),
+            at: nil, completionCallbackType: .dataPlayedBack
+        ) { [weak self] _ in
+            Task { @MainActor in self?.segmentCompleted(gen) }
+        }
+
+        if fade > 0 {
+            idleNode.play()                                   // overlap now, ramp below
+            runTransition(fade: min(fade, secondsRemaining), commitAfter: min(fade, secondsRemaining), gen: gen)
+        } else {
+            // Start the incoming track exactly when the active one ends: sample-
+            // accurate, no gap, no overlap.
+            let startHost = renderTime.hostTime &+ AVAudioTime.hostTime(forSeconds: secondsRemaining)
+            idleNode.play(at: AVAudioTime(hostTime: startHost))
+            runTransition(fade: 0, commitAfter: secondsRemaining, gen: gen)
+        }
+    }
+
+    /// Ramp the crossfade (equal-power) if any, then hand over. The AUDIO seam is
+    /// already exact (scheduled `at:` for gapless, the overlap for crossfade) — the
+    /// commit only moves the bookkeeping/UI over.
+    private func runTransition(fade: Double, commitAfter: Double, gen: Int) {
+        fadeTask?.cancel()
+        fadeTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            if fade > 0 {
+                let steps = max(1, Int(fade / 0.02))
+                for i in 1...steps {
+                    if Task.isCancelled { return }
+                    let t = Double(i) / Double(steps)
+                    self.playerNode.volume = Float(cos(t * .pi / 2))   // active == outgoing here
+                    self.idleNode.volume = Float(sin(t * .pi / 2))     // idle == incoming here
+                    try? await Task.sleep(for: .seconds(0.02))
+                }
+            } else {
+                try? await Task.sleep(for: .seconds(max(0, commitAfter)))
+            }
+            if Task.isCancelled { return }
+            guard gen == self.incomingGen else { return }
+            self.commitPendingTransition()
+        }
+    }
+
+    /// Commit the armed hand-off. Driven by whichever fires first: the fadeTask
+    /// timer, or the outgoing node reaching its real end of data (see
+    /// segmentCompleted). Idempotent — the loser is a no-op.
+    private func commitPendingTransition() {
+        guard isTransitioning, let file = pendingIncomingFile, let next = pendingNext else { return }
+        commitTransition(incomingFile: file, next: next)
+    }
+
+    /// Hand over: the incoming chain becomes active and keeps playing uninterrupted.
+    private func commitTransition(incomingFile: AVAudioFile, next: Track) {
+        guard isTransitioning else { return }
+        // Stop the ramp FIRST. When the outgoing node's natural end drives the
+        // commit (beating the fadeTask timer), the ramp is still suspended at its
+        // await; without this cancel it would resume after the activeIsA flip and
+        // ramp the NEW active track's volume down to silence.
+        fadeTask?.cancel()
+        let outgoing = playerNode
+        outgoing.stop()
+        outgoing.volume = 1
+
+        activeIsA.toggle()                 // the incoming chain is now active
+        playerNode.volume = 1
+        idleNode.volume = 1                // (idleNode is now the outgoing chain) tidy
+        scheduleGeneration = incomingGen   // its completion now governs the next end
+
+        if let i = upcomingIndex() { currentIndex = i }
+        audioFile = incomingFile
+        currentFormat = incomingFile.processingFormat
+        sampleRate = incomingFile.processingFormat.sampleRate
+        audioLengthSamples = incomingFile.length
+        seekFrame = 0
+        pausedFrame = nil
+        duration = sampleRate > 0 ? Double(audioLengthSamples) / sampleRate : next.duration
+        // Crossfade: the incoming track has already been sounding for `fade`
+        // seconds, so read its true playhead rather than snapping to 0. Gapless:
+        // it just started, so this is ~0.
+        currentTime = sampleRate > 0 ? Double(currentFrame) / sampleRate : 0
+        isTransitioning = false
+        fadeTask = nil
+        pendingIncomingFile = nil
+        pendingNext = nil
+        isSuspended = false
+        needsReschedule = false
+        onPlay?(next)
+        updateNowPlayingInfo()
+    }
+
+    /// Collapse any in-flight transition back to the single active (outgoing) track.
+    /// The UI shows the outgoing track until commit, so reverting to it is seamless.
+    /// Every control that assumes one active node calls this first.
+    private func abortTransition() {
+        guard isTransitioning else { return }
+        fadeTask?.cancel()
+        fadeTask = nil
+        isTransitioning = false
+        pendingIncomingFile = nil
+        pendingNext = nil
+        idleNode.stop()
+        idleNode.volume = 1
+        playerNode.volume = 1
+        // The active node kept its original schedule and completion token, so it
+        // still advances correctly on its own when it reaches the end — nothing to
+        // reschedule here.
+    }
+
     // MARK: - Shuffle / repeat
     func toggleShuffle() {
+        abortTransition()
         isShuffled.toggle()
         guard let current = currentTrack else { return }
         if isShuffled {
@@ -509,6 +791,7 @@ final class PlayerEngine {
     }
 
     func cycleRepeat() {
+        abortTransition()
         switch repeatMode {
         case .off: repeatMode = .all
         case .all: repeatMode = .one
@@ -523,12 +806,14 @@ final class PlayerEngine {
     }
 
     func playNext(_ track: Track) {
+        abortTransition()   // the armed "next" would otherwise be wrong
         if queue.isEmpty { play(tracks: [track], startAt: 0) }
         else { queue.insert(track, at: min(currentIndex + 1, queue.count)) }
     }
 
     func removeFromUpNext(at offsets: IndexSet) {
         guard !queue.isEmpty, currentIndex < queue.count else { return }
+        abortTransition()
         var up = upNext
         up.remove(atOffsets: offsets)
         queue = Array(queue[0...currentIndex]) + up
@@ -536,6 +821,7 @@ final class PlayerEngine {
 
     func moveUpNext(from source: IndexSet, to destination: Int) {
         guard !queue.isEmpty, currentIndex < queue.count else { return }
+        abortTransition()
         var up = upNext
         up.move(fromOffsets: source, toOffset: destination)
         queue = Array(queue[0...currentIndex]) + up
@@ -543,11 +829,13 @@ final class PlayerEngine {
 
     func clearUpNext() {
         guard !queue.isEmpty, currentIndex < queue.count else { return }
+        abortTransition()
         queue = Array(queue[0...currentIndex])
     }
 
     func jump(to track: Track) {
         guard let idx = queue.firstIndex(of: track) else { return }
+        abortTransition()
         currentIndex = idx
         startCurrent()
     }
@@ -568,6 +856,8 @@ final class PlayerEngine {
     }
 
     func sleepAtEndOfTrack() {
+        // Cancel any hand-off so the current track really is the last one to play.
+        abortTransition()
         cancelSleepTimer()
         sleepAtTrackEnd = true
     }
@@ -632,12 +922,13 @@ final class PlayerEngine {
     /// Set the normalization gain for a track. Uses the cached loudness
     /// measurement if we have one; otherwise leaves the gain flat and analyzes in
     /// the background so it's ready next time (avoids a mid-track gain jump).
+    private func normalizationGain(for track: Track) -> Float {
+        guard normalizationEnabled, let g = LoudnessService.effectiveGain(for: track) else { return 0 }
+        return g
+    }
+
     private func applyNormalization(for track: Track) {
-        if normalizationEnabled, let g = LoudnessService.effectiveGain(for: track) {
-            normGain.globalGain = g
-        } else {
-            normGain.globalGain = 0
-        }
+        activeNorm.globalGain = normalizationGain(for: track)
         if normalizationEnabled, !LoudnessService.hasMeasurement(for: track) {
             Task { await LoudnessService.analyzeAndCache(track) }
         }

@@ -20,9 +20,29 @@ struct SettingsView: View {
                     }
                 }
 
-                Section("Track Transitions") {
-                    comingSoon("Gapless Playback", "Removes gaps between tracks.")
-                    comingSoon("Crossfade", "Blend the end of one track into the next.")
+                Section {
+                    Toggle(isOn: Binding(
+                        get: { player.gaplessEnabled },
+                        set: { player.setGaplessEnabled($0) }
+                    )) {
+                        Label("Gapless Playback", systemImage: "arrow.right.to.line").foregroundStyle(.primary)
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Label("Crossfade", systemImage: "wave.3.forward").foregroundStyle(.primary)
+                            Spacer()
+                            Text(player.crossfadeDuration < 1 ? "Off" : "\(Int(player.crossfadeDuration))s")
+                                .foregroundStyle(.secondary).monospacedDigit()
+                        }
+                        Slider(value: Binding(
+                            get: { player.crossfadeDuration },
+                            set: { player.setCrossfadeDuration($0) }
+                        ), in: 0...12, step: 1)
+                    }
+                } header: {
+                    Text("Track Transitions")
+                } footer: {
+                    Text("Gapless removes the silence between tracks. Crossfade blends the end of one track into the start of the next; while it's on it takes over from gapless.")
                 }
 
                 Section {
@@ -71,17 +91,6 @@ struct SettingsView: View {
                           allowsMultipleSelection: true) { result in
                 if case .success(let urls) = result { library.importFiles(urls) }
             }
-        }
-    }
-
-    private func comingSoon(_ title: String, _ subtitle: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack {
-                Text(title).foregroundStyle(.secondary)
-                Spacer()
-                Text("Coming soon").font(.caption).foregroundStyle(.tertiary)
-            }
-            Text(subtitle).font(.caption).foregroundStyle(.tertiary)
         }
     }
 }
