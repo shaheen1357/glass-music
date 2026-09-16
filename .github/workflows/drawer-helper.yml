@@ -1,36 +1,39 @@
 name: Build drawer_helper.exe
 
 # Standalone Windows build of the Coccinelle POS cash-drawer helper.
-# Completely independent of the Music app build (build.yml) -- different runner,
-# manual trigger, and it only ever reads tools/drawer-helper/. Nothing in the
-# app (Sources/, project.yml, Music.xcodeproj, scripts/) is touched.
-#
-# Run it: GitHub -> Actions -> "Build drawer_helper.exe" -> Run workflow.
-# Then download the "drawer_helper-windows" artifact from that run.
+# Independent of the Music app build (build.yml): different runner, and it only
+# touches tools/drawer-helper/. Runs on push to that folder, or manually.
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'tools/drawer-helper/**'
+      - '.github/workflows/drawer-helper.yml'
 
 jobs:
   build:
     runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: tools/drawer-helper
     steps:
-      - uses: actions/checkout@v5
+      - name: Checkout
+        uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
       - name: Install build dependencies
+        working-directory: tools/drawer-helper
         run: pip install pyinstaller pywin32
 
       - name: Build drawer_helper.exe
+        working-directory: tools/drawer-helper
         run: pyinstaller --onefile --console --name drawer_helper --hidden-import win32print drawer_helper.py
 
       - name: Bundle config + service scripts next to the exe
+        working-directory: tools/drawer-helper
         shell: cmd
         run: |
           copy /Y config.ini dist\config.ini
