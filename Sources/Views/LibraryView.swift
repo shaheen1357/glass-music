@@ -29,6 +29,7 @@ struct LibraryView: View {
             VStack(spacing: 0) {
                 chips
                 content
+                    .refreshable { await library.scan() }
             }
             .navigationTitle("Your Library")
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Find in Library")

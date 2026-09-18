@@ -1,5 +1,18 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import UIKit
+
+// MARK: - Haptics (light physical feedback on transport + toggles)
+// UIFeedbackGenerator is @MainActor-isolated; every caller is already on the main
+// actor (Button actions, gesture callbacks), so isolate the whole helper.
+@MainActor
+enum Haptics {
+    static func tap(_ style: UIImpactFeedbackGenerator.FeedbackStyle = .light) {
+        UIImpactFeedbackGenerator(style: style).impactOccurred()
+    }
+    static func select() { UISelectionFeedbackGenerator().selectionChanged() }
+    static func success() { UINotificationFeedbackGenerator().notificationOccurred(.success) }
+}
 
 // MARK: - Sort options (Apple Music vocabulary)
 enum ItemSort: String, CaseIterable, Identifiable {
@@ -102,6 +115,15 @@ struct ArtworkView: View {
             decoded = img
         }
     }
+}
+
+// MARK: - Share sheet (present a file/URL via the system activity sheet)
+struct ActivityView: UIViewControllerRepresentable {
+    let items: [Any]
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+    func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
 }
 
 // MARK: - Sleep timer (shared by Settings + full player)

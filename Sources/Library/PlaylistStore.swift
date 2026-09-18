@@ -8,6 +8,10 @@ final class PlaylistStore: ObservableObject {
     private let fileURL: URL
 
     init(fileURL: URL? = nil) {
+        // Only the app's default store gets simulator demo content. Tests pass an
+        // explicit fileURL, so they start clean (no seeded Liked Songs skewing
+        // exact-content assertions).
+        let isDefault = fileURL == nil
         if let fileURL {
             self.fileURL = fileURL
         } else {
@@ -19,7 +23,7 @@ final class PlaylistStore: ObservableObject {
         }
         load()
         ensureSystemPlaylists()
-        seedDemoIfNeeded()
+        if isDefault { seedDemoIfNeeded() }
     }
 
     private func seedDemoIfNeeded() {
@@ -66,6 +70,14 @@ final class PlaylistStore: ObservableObject {
             }
         }
         save()
+    }
+
+    // MARK: - Backup
+    /// Replace all playlists from a restored backup, guaranteeing the system
+    /// playlists (Liked / Podcasts) still exist afterwards.
+    func replaceAll(with new: [Playlist]) {
+        playlists = new
+        ensureSystemPlaylists()   // also saves
     }
 
     // MARK: - Ordering / pinning

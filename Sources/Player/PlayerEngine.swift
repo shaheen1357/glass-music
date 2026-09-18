@@ -4,7 +4,7 @@ import MediaPlayer
 import UIKit
 import Observation
 
-enum RepeatMode {
+enum RepeatMode: String {
     case off, all, one
 }
 
@@ -25,6 +25,11 @@ final class PlayerEngine {
     // MARK: Track transitions (user-facing)
     private(set) var gaplessEnabled = true         // remove the silence between tracks
     private(set) var crossfadeDuration: Double = 0 // seconds (0...12); 0 = off
+    private(set) var autoplayEnabled = true        // keep playing similar songs when the queue ends
+
+    /// Supplies more tracks to continue with when the queue runs out (autoplay /
+    /// radio). Given the last track + the ids already queued, returns fresh tracks.
+    var onNeedMore: ((Track, Set<String>) -> [Track])?
 
     // MARK: Audio engine graph
     // Two player chains feed a shared submixer so one track can hand off into the
@@ -95,6 +100,23 @@ final class PlayerEngine {
     private var originalQueue: [Track] = []
     private var sleepTask: Task<Void, Never>?
     var onPlay: ((Track) -> Void)?
+
+    // MARK: Session persistence (last song + position + shuffle/repeat + queue)
+    private struct PersistedState: Codable {
+        var queueIDs: [String]
+        var originalQueueIDs: [String]
+        var currentIndex: Int
+        var currentTime: Double
+        var isShuffled: Bool
+        var repeatMode: String
+    }
+    private let stateURL: URL = {
+        let fm = FileManager.default
+        let base = (try? fm.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                appropriateFor: nil, create: true))
+            ?? fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        return base.appendingPathComponent("playbackstate.json")
+    }()
 
     var currentTrack: Track? {
         guard queue.indices.contains(currentIndex) else { return nil }
@@ -209,7 +231,10 @@ final class PlayerEngine {
         switch type {
         case .began:
             isSuspended = true                 // Core Audio already stopped the engine
-            pausedFrame = currentFrame
+            // The render clock is gone, so capturing currentFrame here would read
+            // ~0 and rewind the song. Use the last published position instead —
+            // this is the Instagram-Reel / call "restarts from the top" fix.
+            pausedFrame = capturedPlayhead()
             isPlaying = false
             stopDisplayTimer()
             updateNowPlayingInfo()
@@ -249,7 +274,7 @@ final class PlayerEngine {
         // crash on re-attach). Reactivate the session, reconnect, leave paused.
         abortTransition()
         activateSession()
-        pausedFrame = currentFrame
+        pausedFrame = capturedPlayhead()
         isPlaying = false
         stopDisplayTimer()
         rewire()
@@ -294,6 +319,16 @@ final class PlayerEngine {
     private var currentFrame: AVAudioFramePosition {
         if let pf = pausedFrame { return max(0, min(pf, audioLengthSamples)) }
         return max(0, min(seekFrame + renderedFrames, audioLengthSamples))
+    }
+
+    /// Best-known playhead when the render clock can't be trusted — an interruption
+    /// or media reset has already stopped the engine, so `currentFrame` may read the
+    /// start of the schedule (~0). Take whichever is larger of the live clock and
+    /// the last position the display timer published (currentTime).
+    private func capturedPlayhead() -> AVAudioFramePosition {
+        let byClock = currentFrame
+        let byTime = AVAudioFramePosition(max(0, currentTime) * sampleRate)
+        return min(max(byClock, byTime), audioLengthSamples)
     }
 
     private func startDisplayTimer() {
@@ -397,6 +432,7 @@ final class PlayerEngine {
             currentTime = 0
             startDisplayTimer()
             updateNowPlayingInfo()
+            savePlaybackState()
         } catch {
             print("Failed to load \(track.title): \(error)")
             audioFile = nil
@@ -473,6 +509,12 @@ final class PlayerEngine {
             startCurrent()
         } else if repeatMode == .all {
             currentIndex = 0
+            startCurrent()
+        } else if autoplayEnabled, let last = currentTrack,
+                  let more = onNeedMore?(last, Set(queue.map(\.id))), !more.isEmpty {
+            // Queue exhausted → keep the music going with similar songs (radio).
+            queue.append(contentsOf: more)
+            currentIndex += 1
             startCurrent()
         } else {
             pause()
@@ -557,6 +599,7 @@ final class PlayerEngine {
         stopDisplayTimer()
         updateCurrentTime()
         updateNowPlayingInfo()
+        savePlaybackState()
     }
 
     // MARK: - Track transitions (gapless / crossfade)
@@ -570,10 +613,16 @@ final class PlayerEngine {
         UserDefaults.standard.set(crossfadeDuration, forKey: "transition.crossfade")
     }
 
+    func setAutoplayEnabled(_ on: Bool) {
+        autoplayEnabled = on
+        UserDefaults.standard.set(on, forKey: "autoplay.enabled")
+    }
+
     private func loadTransitionSettings() {
         let d = UserDefaults.standard
         gaplessEnabled = d.object(forKey: "transition.gapless") == nil ? true : d.bool(forKey: "transition.gapless")
         crossfadeDuration = min(12, max(0, d.double(forKey: "transition.crossfade")))
+        autoplayEnabled = d.object(forKey: "autoplay.enabled") == nil ? true : d.bool(forKey: "autoplay.enabled")
     }
 
     /// The track that will play after the current one (honours repeat-all wrap).
@@ -778,6 +827,7 @@ final class PlayerEngine {
                 currentIndex = idx
             }
         }
+        savePlaybackState()
     }
 
     private func applyShuffle(keeping index: Int) {
@@ -797,6 +847,7 @@ final class PlayerEngine {
         case .all: repeatMode = .one
         case .one: repeatMode = .off
         }
+        savePlaybackState()
     }
 
     // MARK: - Queue editing
@@ -840,15 +891,108 @@ final class PlayerEngine {
         startCurrent()
     }
 
+    // MARK: - Session persistence
+    /// Snapshot the current session (last song + position + shuffle/repeat + queue)
+    /// so it can be restored on the next launch.
+    private func savePlaybackState() {
+        guard !queue.isEmpty, queue.indices.contains(currentIndex) else { return }
+        let state = PersistedState(
+            queueIDs: queue.map(\.id),
+            originalQueueIDs: originalQueue.map(\.id),
+            currentIndex: currentIndex,
+            currentTime: max(0, currentTime),
+            isShuffled: isShuffled,
+            repeatMode: repeatMode.rawValue
+        )
+        if let data = try? JSONEncoder().encode(state) {
+            try? data.write(to: stateURL, options: .atomic)
+        }
+    }
+
+    /// Called when the app goes to the background: refresh the playhead from the
+    /// live clock, then persist — this is what captures the position when you leave
+    /// for Instagram and the app is later killed.
+    func persistNow() {
+        if sampleRate > 0 { currentTime = Double(currentFrame) / sampleRate }
+        savePlaybackState()
+    }
+
+    /// Restore the last session on launch: rebuild the queue from the library, set
+    /// shuffle/repeat, and load the last song PAUSED at its saved position (so the
+    /// mini-player is there and ready, without blasting audio on open). No-op if a
+    /// session is already active or nothing was saved.
+    func restorePlaybackState(using library: LibraryStore) {
+        guard queue.isEmpty else { return }
+        guard let data = try? Data(contentsOf: stateURL),
+              let s = try? JSONDecoder().decode(PersistedState.self, from: data) else { return }
+        let resolved = s.queueIDs.compactMap { library.tracksByID[$0] }
+        guard !resolved.isEmpty else { return }
+        let currentID = s.queueIDs.indices.contains(s.currentIndex) ? s.queueIDs[s.currentIndex] : nil
+        queue = resolved
+        originalQueue = s.originalQueueIDs.compactMap { library.tracksByID[$0] }
+        isShuffled = s.isShuffled
+        repeatMode = RepeatMode(rawValue: s.repeatMode) ?? .off
+        if let id = currentID, let idx = resolved.firstIndex(where: { $0.id == id }) {
+            currentIndex = idx
+        } else {
+            currentIndex = min(max(0, s.currentIndex), resolved.count - 1)
+        }
+        loadCurrentPaused(at: s.currentTime)
+    }
+
+    /// Load the current track into the graph WITHOUT playing, positioned at
+    /// `seconds`. resume() (or a play tap) picks up from here via needsReschedule.
+    private func loadCurrentPaused(at seconds: Double) {
+        guard let track = currentTrack else { return }
+        idleNode.stop(); idleNode.volume = 1; playerNode.volume = 1
+        playerNode.stop()
+        scheduleGeneration &+= 1
+        do {
+            let file = try AVAudioFile(forReading: track.url)
+            audioFile = file
+            sampleRate = file.processingFormat.sampleRate
+            audioLengthSamples = file.length
+            guard audioLengthSamples > 0 else { audioFile = nil; return }
+            duration = Double(audioLengthSamples) / sampleRate
+            let target = min(max(0, AVAudioFramePosition(max(0, seconds) * sampleRate)), max(0, audioLengthSamples - 1))
+            seekFrame = target
+            pausedFrame = target
+            currentTime = Double(target) / sampleRate
+            connectGraph(format: file.processingFormat)
+            applyNormalization(for: track)
+            needsReschedule = true            // resume() schedules from pausedFrame, then plays
+            isSuspended = false
+            isPlaying = false
+            updateNowPlayingInfo()
+        } catch {
+            print("Restore load failed: \(error)")
+            audioFile = nil
+        }
+    }
+
     // MARK: - Sleep timer
     func startSleepTimer(minutes: Int) {
         cancelSleepTimer()
         sleepTimerMinutes = minutes
         sleepEndDate = Date().addingTimeInterval(Double(minutes) * 60)
         sleepTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(Double(minutes) * 60))
+            let total = Double(minutes) * 60
+            let fade = 8.0
+            try? await Task.sleep(for: .seconds(max(0, total - fade)))
             guard let self, !Task.isCancelled else { return }
+            // Ease the volume down over the last few seconds instead of a hard cut.
+            // Capture the node once so a track-skip mid-fade doesn't duck the new one.
+            let node = self.playerNode
+            let steps = 40
+            for i in 1...steps {
+                if Task.isCancelled { node.volume = 1; return }
+                node.volume = Float(max(0, 1 - Double(i) / Double(steps)))
+                try? await Task.sleep(for: .seconds(fade / Double(steps)))
+            }
+            if Task.isCancelled { node.volume = 1; return }
             self.pause()
+            node.volume = 1                     // restore for the next play
+            self.playerNode.volume = 1
             self.sleepTimerMinutes = nil
             self.sleepEndDate = nil
             self.sleepTask = nil
@@ -868,6 +1012,7 @@ final class PlayerEngine {
         sleepTimerMinutes = nil
         sleepEndDate = nil
         sleepAtTrackEnd = false
+        playerNode.volume = 1   // undo any in-progress sleep fade
     }
 
     // MARK: - Equalizer

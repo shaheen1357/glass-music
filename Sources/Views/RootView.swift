@@ -3,6 +3,7 @@ import SwiftUI
 struct RootView: View {
     @Environment(PlayerEngine.self) private var player
     @EnvironmentObject var playlists: PlaylistStore
+    @EnvironmentObject var library: LibraryStore
     @State private var showNowPlaying = false
     @State private var selection = 0
     @Namespace private var playerNS
@@ -14,6 +15,7 @@ struct RootView: View {
                 NowPlayingView(isPresented: $showNowPlaying)
                     .environment(player)
                     .environmentObject(playlists)
+                    .environmentObject(library)
                     // Apple-Music zoom out of the mini player (plain @State binding
                     // keeps the transition from falling back).
                     .navigationTransition(.zoom(sourceID: "player", in: playerNS))

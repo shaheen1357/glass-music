@@ -1,16 +1,23 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+private struct ExportItem: Identifiable { let id = UUID(); let url: URL }
+
 struct SettingsView: View {
     @Environment(PlayerEngine.self) private var player
     @EnvironmentObject var library: LibraryStore
+    @EnvironmentObject var playlists: PlaylistStore
+    @EnvironmentObject var stats: PlayStatsStore
     @Environment(\.dismiss) private var dismiss
     @State private var showImport = false
+    @State private var exportItem: ExportItem?
+    @State private var showRestore = false
+    @State private var restoreMessage: String?
 
     var body: some View {
         NavigationStack {
             List {
-                Section("Playback") {
+                Section {
                     SleepTimerMenu {
                         HStack {
                             Label("Sleep Timer", systemImage: "moon.zzz").foregroundStyle(.primary)
@@ -18,6 +25,16 @@ struct SettingsView: View {
                             SleepStatusText().foregroundStyle(.secondary)
                         }
                     }
+                    Toggle(isOn: Binding(
+                        get: { player.autoplayEnabled },
+                        set: { player.setAutoplayEnabled($0) }
+                    )) {
+                        Label("Autoplay", systemImage: "infinity").foregroundStyle(.primary)
+                    }
+                } header: {
+                    Text("Playback")
+                } footer: {
+                    Text("When your music runs out, Autoplay keeps going with similar songs.")
                 }
 
                 Section {
@@ -75,10 +92,36 @@ struct SettingsView: View {
                     Button { Task { await library.scan(force: true) } } label: {
                         Label("Rescan Library", systemImage: "arrow.clockwise")
                     }
+                    Button { Task { await library.fetchMissingArtwork() } } label: {
+                        Label(library.isFetchingArtwork ? "Fetching Artwork…" : "Fetch Missing Artwork",
+                              systemImage: "photo.on.rectangle.angled")
+                    }
+                    .disabled(library.isFetchingArtwork)
+                }
+
+                Section {
+                    Button {
+                        if let url = BackupService.makeFile(playlists: playlists, stats: stats) {
+                            exportItem = ExportItem(url: url)
+                        }
+                    } label: {
+                        Label("Export Backup", systemImage: "square.and.arrow.up").foregroundStyle(.primary)
+                    }
+                    Button { showRestore = true } label: {
+                        Label("Restore from Backup", systemImage: "arrow.down.doc").foregroundStyle(.primary)
+                    }
+                } header: {
+                    Text("Backup")
+                } footer: {
+                    Text("Saves your playlists, Liked Songs and play history to a file you can keep or move to a new phone. Your music files aren't included — they rebuild from the Music folder.")
                 }
 
                 Section("About") {
-                    HStack { Text("Version"); Spacer(); Text("1.0").foregroundStyle(.secondary) }
+                    HStack {
+                        Text("Version"); Spacer()
+                        Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.0")
+                            .foregroundStyle(.secondary)
+                    }
                     Text("Local hi-res player · FLAC, ALAC, AAC, MP3, WAV, AIFF")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
@@ -91,6 +134,19 @@ struct SettingsView: View {
                           allowsMultipleSelection: true) { result in
                 if case .success(let urls) = result { library.importFiles(urls) }
             }
+            .sheet(item: $exportItem) { ActivityView(items: [$0.url]) }
+            .fileImporter(isPresented: $showRestore, allowedContentTypes: [.json],
+                          allowsMultipleSelection: false) { result in
+                if case .success(let urls) = result, let url = urls.first {
+                    let ok = BackupService.restore(from: url, playlists: playlists, stats: stats)
+                    if ok { Haptics.success() }
+                    restoreMessage = ok ? "Backup restored." : "Couldn't read that backup file."
+                }
+            }
+            .alert("Restore", isPresented: Binding(get: { restoreMessage != nil },
+                                                   set: { if !$0 { restoreMessage = nil } })) {
+                Button("OK", role: .cancel) { }
+            } message: { Text(restoreMessage ?? "") }
         }
     }
 }
