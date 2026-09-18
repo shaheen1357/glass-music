@@ -3,6 +3,7 @@ import PhotosUI
 import UniformTypeIdentifiers
 
 enum PlaylistListSort: String, CaseIterable, Identifiable {
+    case recentlyPlayed = "Recently Played"
     case recentlyAdded = "Recently Added"
     case title = "Title"
     var id: String { rawValue }
@@ -80,7 +81,8 @@ struct PlaylistCover: View {
 struct PlaylistsView: View {
     @EnvironmentObject var playlists: PlaylistStore
     @EnvironmentObject var library: LibraryStore
-    @State private var sort: PlaylistListSort = .recentlyAdded
+    @EnvironmentObject var stats: PlayStatsStore
+    @State private var sort: PlaylistListSort = .recentlyPlayed
     @State private var query = ""
     @State private var showNew = false
     @State private var showImporter = false
@@ -93,14 +95,23 @@ struct PlaylistsView: View {
         let all = playlists.playlists
         let q = query.trimmingCharacters(in: .whitespaces)
         let filtered = q.isEmpty ? all : all.filter { $0.name.localizedCaseInsensitiveContains(q) }
+        // Pinned playlists always lead (explicit user override), whatever the sort.
         let pinned = filtered.filter { $0.isPinned }
-        let systemRows = filtered.filter { !$0.isPinned && $0.kind != .user }
-        var userRest = filtered.filter { !$0.isPinned && $0.kind == .user }
+        let rest = filtered.filter { !$0.isPinned }
         switch sort {
-        case .title: userRest.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        case .recentlyAdded: userRest.reverse()
+        case .recentlyPlayed:
+            // Last played on top, long-ago (and never-played) at the bottom.
+            return pinned + stats.byLastPlayed(rest)
+        case .title:
+            let systemRows = rest.filter { $0.kind != .user }
+            let userRest = rest.filter { $0.kind == .user }
+                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            return pinned + systemRows + userRest
+        case .recentlyAdded:
+            let systemRows = rest.filter { $0.kind != .user }
+            let userRest = Array(rest.filter { $0.kind == .user }.reversed())
+            return pinned + systemRows + userRest
         }
-        return pinned + systemRows + userRest
     }
 
     var body: some View {
@@ -199,6 +210,7 @@ struct PlaylistDetailView: View {
     let playlistID: String
     @EnvironmentObject var playlists: PlaylistStore
     @EnvironmentObject var library: LibraryStore
+    @EnvironmentObject var stats: PlayStatsStore
     @EnvironmentObject private var player: PlayerEngine
     @State private var showAddSongs = false
     @State private var showEditDetails = false
@@ -227,11 +239,16 @@ struct PlaylistDetailView: View {
         }
         switch sortMode {
         case .custom:
-            if playlist?.kind == .liked { items.reverse() }   // Liked Songs: newest like on top
+            // Manual/stored order. Liked Songs are stored newest-first (toggleLike
+            // inserts at index 0), so they already show the newest like on top.
+            break
         case .title: items.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
         case .artist: items.sort { $0.artist.localizedCaseInsensitiveCompare($1.artist) == .orderedAscending }
         case .album: items.sort { $0.album.localizedCaseInsensitiveCompare($1.album) == .orderedAscending }
-        case .recentlyAdded: items.reverse()
+        case .recentlyAdded:
+            // Newest added on top. User playlists append newest LAST, so reverse
+            // them; Liked Songs are already stored newest-first, so leave as-is.
+            if playlist?.kind != .liked { items.reverse() }
         }
         return items
     }
@@ -263,7 +280,10 @@ struct PlaylistDetailView: View {
             } else {
                 Section {
                     ForEach(Array(displayedTracks.enumerated()), id: \.element.id) { index, track in
-                        TrackRow(track: track, onPlay: { player.play(tracks: displayedTracks, startAt: index) })
+                        TrackRow(track: track, onPlay: {
+                            stats.recordPlaylistInteraction(playlistID)
+                            player.play(tracks: displayedTracks, startAt: index)
+                        })
                     }
                     .onDelete { offsets in
                         offsets.map { displayedTracks[$0].id }
@@ -409,6 +429,7 @@ struct PlaylistDetailView: View {
             }
             Spacer(minLength: 8)
             Button {
+                stats.recordPlaylistInteraction(playlistID)
                 player.playShuffled(displayedTracks)
             } label: {
                 Image(systemName: "shuffle").font(.title2)
@@ -416,6 +437,7 @@ struct PlaylistDetailView: View {
             }
             .disabled(displayedTracks.isEmpty)
             Button {
+                stats.recordPlaylistInteraction(playlistID)
                 player.playInOrder(displayedTracks)
             } label: {
                 Image(systemName: "play.fill").font(.title2).foregroundStyle(.white)

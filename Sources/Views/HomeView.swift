@@ -7,6 +7,7 @@ struct HomeView: View {
     @EnvironmentObject var playlists: PlaylistStore
     @EnvironmentObject var stats: PlayStatsStore
     @State private var showSettings = false
+    @State private var mixes: [Mix] = []
 
     private let tile: CGFloat = 150
 
@@ -22,8 +23,10 @@ struct HomeView: View {
     }
 
     private var quickItems: [QuickItem] {
-        // Quick-access grid is playlists only (albums/songs live in the shelves below).
-        playlists.orderedPlaylists.prefix(6).map { .playlist($0) }
+        // Quick-access grid is playlists only (albums/songs live in the shelves
+        // below), ordered by how often you've played each (most-played first).
+        // Ties keep the pinned-first base order, so it's stable before any plays.
+        stats.byInteractions(playlists.orderedPlaylists).prefix(6).map { .playlist($0) }
     }
 
     var body: some View {
@@ -38,6 +41,8 @@ struct HomeView: View {
                 } else {
                     VStack(alignment: .leading, spacing: 24) {
                         if !quickItems.isEmpty { quickGrid }
+
+                        if !mixes.isEmpty { mixShelf("Made for You", mixes: mixes) }
 
                         let recent = stats.recentlyPlayed(from: library.tracks, limit: 12)
                         let added = Array(library.albums.sorted { $0.dateAdded > $1.dateAdded }.prefix(12))
@@ -58,8 +63,17 @@ struct HomeView: View {
                 }
             }
             .sheet(isPresented: $showSettings) {
-                SettingsView().environmentObject(player).environmentObject(library)
+                SettingsView()
+                    .environmentObject(player)
+                    .environmentObject(library)
+                    .environmentObject(playlists)
+                    .environmentObject(stats)
             }
+            .task(id: library.tracks.count) {
+                mixes = MixBuilder.mixes(tracks: library.tracks, stats: stats,
+                                         liked: playlists.liked?.trackIDs ?? [])
+            }
+            .refreshable { await library.scan() }
         }
     }
 
@@ -116,6 +130,37 @@ struct HomeView: View {
     // MARK: horizontal shelves
     private func header(_ title: String) -> some View {
         Text(title).font(.title2.bold()).padding(.horizontal)
+    }
+
+    private func mixShelf(_ title: String, mixes: [Mix]) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            header(title)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .top, spacing: 14) {
+                    ForEach(mixes) { mix in
+                        NavigationLink { SongsView(title: mix.title, tracks: mix.tracks) } label: {
+                            VStack(alignment: .leading, spacing: 6) {
+                                ZStack(alignment: .bottomLeading) {
+                                    ArtworkView(id: mix.tracks.first?.id ?? mix.id,
+                                                data: mix.tracks.first?.artworkData, corner: 8)
+                                        .frame(width: tile, height: tile)
+                                    LinearGradient(colors: [.black.opacity(0.65), .clear],
+                                                   startPoint: .bottom, endPoint: .center)
+                                        .allowsHitTesting(false)
+                                    Text(mix.title).font(.headline.bold()).foregroundStyle(.white).padding(10)
+                                }
+                                .frame(width: tile, height: tile)
+                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                Text(mix.subtitle).font(.caption).foregroundStyle(.secondary)
+                                    .lineLimit(1).frame(width: tile, alignment: .leading)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal)
+            }
+        }
     }
 
     private func trackShelf(_ title: String, tracks: [Track]) -> some View {

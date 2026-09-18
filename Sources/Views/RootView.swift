@@ -3,6 +3,7 @@ import SwiftUI
 struct RootView: View {
     @EnvironmentObject private var player: PlayerEngine
     @EnvironmentObject var playlists: PlaylistStore
+    @EnvironmentObject var library: LibraryStore
     @State private var showNowPlaying = false
     @State private var selection = 0
 
@@ -13,6 +14,7 @@ struct RootView: View {
                 NowPlayingView(isPresented: $showNowPlaying)
                     .environmentObject(player)
                     .environmentObject(playlists)
+                    .environmentObject(library)
             }
     }
 

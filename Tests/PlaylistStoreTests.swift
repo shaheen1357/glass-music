@@ -96,4 +96,23 @@ final class PlaylistStoreTests: XCTestCase {
         let second = PlaylistStore(fileURL: url)   // reload from same file
         XCTAssertTrue(second.playlists.contains { $0.name == "Persisted" && $0.trackIDs == ["z"] })
     }
+
+    /// Liked Songs store newest-first (a new like goes to the top) — this is what
+    /// lets the detail view show the newest like on top without extra reversing.
+    func testLikedStoresNewestFirst() {
+        let store = makeStore()
+        store.toggleLike(track("first"))
+        store.toggleLike(track("second"))
+        store.toggleLike(track("third"))
+        XCTAssertEqual(store.liked?.trackIDs, ["third", "second", "first"])
+    }
+
+    func testAddTrackIDsDedupAndAllowDuplicates() {
+        let store = makeStore()
+        let p = store.createPlaylist(name: "X")
+        store.addTrackIDs(["a", "b", "a"], to: p.id)                 // dedup by default
+        XCTAssertEqual(store.playlists.first { $0.id == p.id }?.trackIDs, ["a", "b"])
+        store.addTrackIDs(["a"], to: p.id, allowDuplicates: true)    // opt-in duplicate
+        XCTAssertEqual(store.playlists.first { $0.id == p.id }?.trackIDs, ["a", "b", "a"])
+    }
 }

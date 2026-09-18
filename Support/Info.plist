@@ -34,5 +34,24 @@
     <true/>
     <key>ITSAppUsesNonExemptEncryption</key>
     <false/>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Audio</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.audio</string>
+                <string>public.mp3</string>
+                <string>public.mpeg-4-audio</string>
+                <string>org.xiph.flac</string>
+                <string>com.microsoft.waveform-audio</string>
+                <string>public.aifc-audio</string>
+                <string>public.aiff-audio</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>

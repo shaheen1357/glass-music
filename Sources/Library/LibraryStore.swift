@@ -10,6 +10,7 @@ final class LibraryStore: ObservableObject {
     @Published private(set) var albums: [Album] = []
     @Published private(set) var artists: [ArtistGroup] = []
     @Published private(set) var isScanning = false
+    @Published private(set) var isFetchingArtwork = false
 
     private let audioExtensions: Set<String> = [
         "mp3", "m4a", "aac", "flac", "alac", "wav", "aif", "aiff", "caf", "m4b", "ogg"
@@ -47,7 +48,8 @@ final class LibraryStore: ObservableObject {
                 // Known file — keep cached metadata, but point at the CURRENT url
                 // (the container path changes on reinstall).
                 result.append(Track(id: c.id, url: url, title: c.title, artist: c.artist,
-                                    album: c.album, trackNumber: c.trackNumber, duration: c.duration,
+                                    album: c.album, albumArtist: c.albumArtist, trackNumber: c.trackNumber,
+                                    discNumber: c.discNumber, duration: c.duration,
                                     artworkData: c.artworkData, dateAdded: c.dateAdded, lyrics: c.lyrics))
             } else if let track = await makeTrack(from: url) {
                 result.append(track)
@@ -120,7 +122,9 @@ final class LibraryStore: ObservableObject {
         var title = fileBaseName
         var artist = "Unknown Artist"
         var album = "Unknown Album"
+        var albumArtist: String?
         var trackNumber = 0
+        var discNumber = 0
         var duration: Double = 0
         var artworkData: Data?
         var lyrics: String?
@@ -163,7 +167,9 @@ final class LibraryStore: ObservableObject {
             if let t = tags.title, !t.isEmpty { title = t }
             if let a = tags.artist, !a.isEmpty { artist = a }
             if let al = tags.album, !al.isEmpty { album = al }
+            if let aa = tags.albumArtist, !aa.isEmpty { albumArtist = aa }
             if let n = tags.trackNumber { trackNumber = n }
+            if let d = tags.discNumber { discNumber = d }
             if let ly = tags.lyrics, !ly.isEmpty { lyrics = ly }
             if artworkData == nil, let pic = tags.artwork { artworkData = Self.thumbnail(from: pic) }
         }
@@ -184,7 +190,9 @@ final class LibraryStore: ObservableObject {
             title: title,
             artist: artist,
             album: album,
+            albumArtist: albumArtist,
             trackNumber: trackNumber,
+            discNumber: discNumber,
             duration: duration,
             artworkData: artworkData,
             dateAdded: dateAdded,
@@ -264,18 +272,81 @@ final class LibraryStore: ObservableObject {
         }
     }
 
+    /// Tracks to keep playing with when the queue runs out (autoplay / radio):
+    /// same artist first, then same album, then a shuffled spread of the rest.
+    func autoplaySuggestions(after track: Track, excluding: Set<String>, limit: Int = 25) -> [Track] {
+        var used = excluding
+        var picked: [Track] = []
+        func take(_ candidates: [Track]) {
+            for t in candidates where !used.contains(t.id) {
+                used.insert(t.id)
+                picked.append(t)
+                if picked.count >= limit { break }
+            }
+        }
+        take(tracks.filter { $0.artist == track.artist })
+        if picked.count < limit { take(tracks.filter { $0.album == track.album }) }
+        if picked.count < limit { take(tracks.shuffled()) }
+        return picked
+    }
+
+    /// Fill in missing album artwork from the network (user-initiated). Fetches
+    /// once per album, applies all updates in one pass, and persists to the cache.
+    func fetchMissingArtwork() async {
+        guard !isFetchingArtwork else { return }
+        isFetchingArtwork = true
+        defer { isFetchingArtwork = false }
+
+        var artByAlbum: [String: Data] = [:]   // fetched thumbnail per album key
+        var triedAlbums = Set<String>()
+        var updates: [String: Data] = [:]      // track id -> thumbnail
+
+        for t in tracks where t.artworkData == nil {
+            let key = "\(t.albumArtist ?? t.artist)\u{1}\(t.album)"
+            if let art = artByAlbum[key] {
+                updates[t.id] = art
+            } else if !triedAlbums.contains(key) {
+                triedAlbums.insert(key)
+                if let raw = await ArtworkFetcher.fetchRaw(artist: t.albumArtist ?? t.artist, album: t.album),
+                   let thumb = Self.thumbnail(from: raw) {
+                    artByAlbum[key] = thumb
+                    updates[t.id] = thumb
+                }
+            }
+        }
+        guard !updates.isEmpty else { return }
+        tracks = tracks.map { tk in
+            guard let art = updates[tk.id] else { return tk }
+            var m = tk; m.artworkData = art; return m
+        }
+        rebuildCollections()
+        saveCache(tracks)
+    }
+
+    /// The album / artist a track belongs to (for "Go to Album/Artist").
+    func album(for track: Track) -> Album? {
+        albums.first { $0.tracks.contains { $0.id == track.id } }
+    }
+    func artist(for track: Track) -> ArtistGroup? {
+        artists.first { $0.name == track.artist }
+    }
+
     private func rebuildCollections() {
         tracksByID = Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        let byAlbum = Dictionary(grouping: tracks) { "\($0.album)\u{1}\($0.artist)" }
+        // Group by album + album-artist so compilations stay one album and
+        // multi-performer albums don't fragment. Order within an album by (disc,
+        // track) so multi-disc sets play in the right sequence.
+        let byAlbum = Dictionary(grouping: tracks) { "\($0.album)\u{1}\($0.albumArtist ?? $0.artist)" }
         albums = byAlbum.map { key, group in
             let sorted = group.sorted {
+                if $0.discNumber != $1.discNumber { return $0.discNumber < $1.discNumber }
                 if $0.trackNumber != $1.trackNumber { return $0.trackNumber < $1.trackNumber }
                 return $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
             }
             return Album(
                 id: key,
                 title: group.first?.album ?? "Unknown Album",
-                artist: group.first?.artist ?? "Unknown Artist",
+                artist: group.first?.albumArtist ?? group.first?.artist ?? "Unknown Artist",
                 tracks: sorted
             )
         }

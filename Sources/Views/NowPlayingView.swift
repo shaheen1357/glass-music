@@ -34,25 +34,36 @@ struct MiniPlayerView: View {
             .padding(.vertical, 4)
             .overlay(alignment: .trailing) {
                 HStack(spacing: 6) {
-                    Button { player.previous() } label: {
+                    Button { Haptics.tap(); player.previous() } label: {
                         Image(systemName: "backward.fill")
                             .font(.title3).frame(width: 36, height: 44).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    Button { player.togglePlayPause() } label: {
+                    .accessibilityLabel("Previous")
+                    Button { Haptics.tap(); player.togglePlayPause() } label: {
                         Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                             .font(.title3).frame(width: 40, height: 44).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    Button { player.next() } label: {
+                    .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
+                    Button { Haptics.tap(); player.next() } label: {
                         Image(systemName: "forward.fill")
                             .font(.title3).frame(width: 36, height: 44).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Next")
                 }
                 .foregroundStyle(.primary)
                 .padding(.trailing, 12)
             }
+            // Swipe the strip horizontally to skip (minimumDistance keeps tap-to-open working).
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 24).onEnded { g in
+                    guard abs(g.translation.width) > 50, abs(g.translation.width) > abs(g.translation.height) else { return }
+                    Haptics.tap()
+                    if g.translation.width < 0 { player.next() } else { player.previous() }
+                }
+            )
             .overlay(alignment: .bottom) {
                 GeometryReader { geo in
                     let frac = player.duration > 0 ? min(1, max(0, clock.currentTime / player.duration)) : 0
@@ -103,11 +114,14 @@ private struct ProgressScrubber: View {
 struct NowPlayingView: View {
     @EnvironmentObject private var player: PlayerEngine
     @EnvironmentObject var playlists: PlaylistStore
+    @EnvironmentObject var library: LibraryStore
     @Binding var isPresented: Bool
 
     @State private var showQueue = false
     @State private var showAdd = false
     @State private var showLyrics = false
+    @State private var showAlbum = false
+    @State private var showArtist = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -148,6 +162,18 @@ struct NowPlayingView: View {
                     .materialSheetBackground()
             }
         }
+        .sheet(isPresented: $showAlbum) {
+            if let t = player.currentTrack, let album = library.album(for: t) {
+                NavigationStack { AlbumDetailView(album: album) }
+                    .environmentObject(player).environmentObject(playlists).environmentObject(library)
+            }
+        }
+        .sheet(isPresented: $showArtist) {
+            if let t = player.currentTrack, let artist = library.artist(for: t) {
+                NavigationStack { ArtistDetailView(artist: artist) }
+                    .environmentObject(player).environmentObject(playlists).environmentObject(library)
+            }
+        }
     }
 
     // Dark scrim guarantees the white controls are always legible, whatever the artwork.
@@ -185,6 +211,13 @@ struct NowPlayingView: View {
                             Label(playlists.isLiked(t) ? "Remove from Liked Songs" : "Love",
                                   systemImage: playlists.isLiked(t) ? "heart.slash" : "heart")
                         }
+                        Divider()
+                        if library.album(for: t) != nil {
+                            Button { showAlbum = true } label: { Label("Go to Album", systemImage: "square.stack") }
+                        }
+                        if library.artist(for: t) != nil {
+                            Button { showArtist = true } label: { Label("Go to Artist", systemImage: "music.mic") }
+                        }
                     }
                 } label: {
                     Image(systemName: "ellipsis").font(.headline).foregroundStyle(.white)
@@ -214,6 +247,14 @@ struct NowPlayingView: View {
             .scaleEffect(player.isPlaying ? 1.0 : 0.86)
             .shadow(color: .black.opacity(0.4), radius: 24, y: 12)
             .animation(.spring(response: 0.4, dampingFraction: 0.7), value: player.isPlaying)
+            // Swipe the cover left/right to change track.
+            .gesture(
+                DragGesture(minimumDistance: 30).onEnded { g in
+                    guard abs(g.translation.width) > 60, abs(g.translation.width) > abs(g.translation.height) else { return }
+                    Haptics.tap()
+                    if g.translation.width < 0 { player.next() } else { player.previous() }
+                }
+            )
     }
 
     private var isLiked: Bool {
@@ -231,24 +272,28 @@ struct NowPlayingView: View {
             }
             Spacer()
             Button {
-                if let track = player.currentTrack { playlists.toggleLike(track) }
+                if let track = player.currentTrack { Haptics.tap(); playlists.toggleLike(track) }
             } label: {
                 Image(systemName: isLiked ? "heart.fill" : "heart")
                     .font(.title2)
                     .foregroundStyle(isLiked ? Color.accentColor : .white.opacity(0.85))
             }
+            .accessibilityLabel(isLiked ? "Remove from Liked Songs" : "Love")
         }
     }
 
     private var controls: some View {
         HStack {
-            Button { player.previous() } label: { Image(systemName: "backward.fill").font(.title) }
+            Button { Haptics.tap(); player.previous() } label: { Image(systemName: "backward.fill").font(.title) }
+                .accessibilityLabel("Previous")
             Spacer()
-            Button { player.togglePlayPause() } label: {
+            Button { Haptics.tap(.medium); player.togglePlayPause() } label: {
                 Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.system(size: 54))
             }
+            .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
             Spacer()
-            Button { player.next() } label: { Image(systemName: "forward.fill").font(.title) }
+            Button { Haptics.tap(); player.next() } label: { Image(systemName: "forward.fill").font(.title) }
+                .accessibilityLabel("Next")
         }
         .foregroundStyle(.white)
         .padding(.horizontal, 24)
@@ -256,17 +301,21 @@ struct NowPlayingView: View {
 
     private var bottomBar: some View {
         HStack {
-            Button { player.toggleShuffle() } label: {
+            Button { Haptics.select(); player.toggleShuffle() } label: {
                 Image(systemName: "shuffle")
                     .foregroundStyle(player.isShuffled ? Color.accentColor : .white.opacity(0.8))
             }
+            .accessibilityLabel("Shuffle")
+            .accessibilityValue(player.isShuffled ? "On" : "Off")
             Spacer()
             VolumeSlider().frame(height: 28).frame(maxWidth: .infinity).padding(.horizontal, 16)
             Spacer()
-            Button { player.cycleRepeat() } label: {
+            Button { Haptics.select(); player.cycleRepeat() } label: {
                 Image(systemName: player.repeatMode == .one ? "repeat.1" : "repeat")
                     .foregroundStyle(player.repeatMode == .off ? .white.opacity(0.8) : Color.accentColor)
             }
+            .accessibilityLabel("Repeat")
+            .accessibilityValue(player.repeatMode == .off ? "Off" : (player.repeatMode == .one ? "One" : "All"))
         }
         .font(.title3)
         .padding(.top, 4)

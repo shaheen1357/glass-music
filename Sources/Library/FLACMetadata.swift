@@ -13,7 +13,9 @@ enum FLACMetadata {
         var title: String?
         var artist: String?
         var album: String?
+        var albumArtist: String?
         var trackNumber: Int?
+        var discNumber: Int?
         var artwork: Data?
         var lyrics: String?
     }
@@ -76,11 +78,15 @@ enum FLACMetadata {
             // (so compilations still show the performer, not the album artist).
             case "ARTIST": tags.artist = value
             case "ALBUMARTIST", "ALBUM ARTIST", "MAIN_ARTIST":
+                tags.albumArtist = value
                 if tags.artist == nil { tags.artist = value }
             case "ALBUM": tags.album = value
             case "TRACKNUMBER":
                 let num = value.split(separator: "/").first.map(String.init) ?? value
                 tags.trackNumber = Int(num.trimmingCharacters(in: .whitespaces))
+            case "DISCNUMBER", "DISC":
+                let num = value.split(separator: "/").first.map(String.init) ?? value
+                tags.discNumber = Int(num.trimmingCharacters(in: .whitespaces))
             case "LYRICS", "UNSYNCEDLYRICS", "UNSYNCED LYRICS":
                 if tags.lyrics == nil { tags.lyrics = value }
             default: break
