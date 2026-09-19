@@ -62,10 +62,12 @@ enum MixBuilder {
         return out
     }
 
+    @MainActor
     private static func score(_ t: Track, stats: PlayStatsStore, liked: Set<String>) -> Int {
         stats.playCount(t.id) * 2 + (liked.contains(t.id) ? 5 : 0)
     }
 
+    @MainActor
     private static func artistPlayCounts(_ tracks: [Track], stats: PlayStatsStore) -> [String: Int] {
         var m: [String: Int] = [:]
         for t in tracks { m[t.artist, default: 0] += stats.playCount(t.id) }
