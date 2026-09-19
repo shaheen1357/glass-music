@@ -88,32 +88,3 @@ jobs:
           path: Music.ipa
           if-no-files-found: error
           retention-days: 30
-
-      - name: Build (iOS Simulator, for Appetize)
-        run: |
-          set -o pipefail
-          xcodebuild \
-            -project Music.xcodeproj \
-            -scheme Music \
-            -configuration Release \
-            -sdk iphonesimulator \
-            -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath build-sim \
-            CODE_SIGNING_ALLOWED=NO \
-            clean build
-
-      - name: Stage simulator .app for Appetize
-        run: |
-          APP=$(find build-sim/Build/Products -name "Music.app" -type d | head -n1)
-          if [ -z "$APP" ]; then echo "::error::Simulator Music.app not found"; exit 1; fi
-          echo "Found simulator app: $APP"
-          rm -rf appetize && mkdir -p appetize
-          cp -R "$APP" appetize/
-
-      - name: Upload simulator app (for Appetize)
-        uses: actions/upload-artifact@v5
-        with:
-          name: Music-Simulator-app
-          path: appetize
-          if-no-files-found: error
-          retention-days: 30
