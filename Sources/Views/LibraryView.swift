@@ -91,7 +91,8 @@ struct LibraryView: View {
         let q = query.trimmingCharacters(in: .whitespaces)
         let all = q.isEmpty ? playlists.playlists
             : playlists.playlists.filter { $0.name.localizedCaseInsensitiveContains(q) }
-        return all.filter { $0.isPinned } + all.filter { !$0.isPinned }
+        // Pinned first, then most-recently-played on top (never-played keep order).
+        return all.filter { $0.isPinned } + stats.byLastPlayed(all.filter { !$0.isPinned })
     }
 
     @ViewBuilder private var playlistsContent: some View {
