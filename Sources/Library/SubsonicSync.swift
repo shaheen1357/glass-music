@@ -17,6 +17,7 @@ final class SubsonicSync {
 
     private(set) var state: State = .idle
     private(set) var lastSynced: Date?
+    private(set) var progressText: String?        // live "Syncing… N songs" for the UI
 
     // Explicitly downloaded (pinned) remote server-ids — never evicted.
     private(set) var pinnedIDs: Set<String> = []
@@ -37,37 +38,75 @@ final class SubsonicSync {
         state = .syncing
         do {
             try await syncCatalog(client)
+            progressText = "Syncing playlists…"
             try await syncPlaylists(client)
             try await syncLiked(client)
             playlists.reconcileKeys(using: library)
             lastSynced = Date()
             state = .done
+            progressText = nil
         } catch {
+            progressText = nil
             state = .failed((error as? SubsonicError)?.errorDescription ?? error.localizedDescription)
         }
     }
 
     private func syncCatalog(_ client: SubsonicClient) async throws {
-        // Walk artists → albums → songs. One cover thumbnail per album, shared by
-        // its tracks, so a remote track carries artwork exactly like a local one.
-        let artists = try await client.artists()
-        var remote: [Track] = []
-        for artist in artists {
-            let albums = (try? await client.albums(forArtist: artist.id)) ?? []
-            for album in albums {
+        // Pull albums in bulk (paged), then songs per album, merging incrementally
+        // so the library fills in live with a running count — no silent wait. Cover
+        // art is fetched afterwards in the background so it never blocks anything.
+        var all: [Track] = []
+        var coverJobs: [(cover: String, ids: [String])] = []
+        var offset = 0
+        var processed = 0
+        let pageSize = 500
+        while true {
+            let page = try await client.newestAlbums(size: pageSize, offset: offset)
+            if page.isEmpty { break }
+            for album in page {
                 let songs = (try? await client.songs(forAlbum: album.id)) ?? []
-                var art: Data?
-                if let coverID = album.coverArt, let url = client.coverArtURL(id: coverID, size: 600) {
-                    art = await Self.fetchThumbnail(url)
-                }
-                for s in songs {
-                    var t = client.track(from: s)
-                    if t.artworkData == nil { t.artworkData = art }
-                    remote.append(t)
+                let mapped = songs.map { client.track(from: $0) }
+                all.append(contentsOf: mapped)
+                if let cover = album.coverArt { coverJobs.append((cover, mapped.map(\.id))) }
+                processed += 1
+                // Update the count and paint the library every few albums, so songs
+                // appear as they arrive instead of after the whole walk.
+                if processed % 3 == 0 {
+                    progressText = "Syncing library… \(all.count) songs"
+                    library.mergeRemote(all, persist: false)
                 }
             }
+            offset += page.count
+            if page.count < pageSize { break }
         }
-        library.mergeRemote(remote)
+        library.mergeRemote(all, persist: true)             // final merge + cache
+        progressText = nil
+        let jobs = coverJobs
+        Task { @MainActor [weak self] in await self?.backfillArtwork(jobs, client: client) }
+    }
+
+    /// Fetch one thumbnail per album after the catalog is already usable, and apply
+    /// them so artwork appears gradually instead of gating the whole sync.
+    private func backfillArtwork(_ jobs: [(cover: String, ids: [String])], client: SubsonicClient) async {
+        var art: [String: Data] = [:]
+        for (i, job) in jobs.enumerated() {
+            if let url = client.coverArtURL(id: job.cover, size: 400),
+               let data = await Self.fetchThumbnail(url) {
+                for id in job.ids { art[id] = data }
+            }
+            // Apply in batches so covers pop in as they arrive, not all at the end.
+            if art.count >= 40 || i == jobs.count - 1 {
+                library.applyRemoteArtwork(art)
+                art.removeAll(keepingCapacity: true)
+            }
+        }
+    }
+
+    /// Star / unstar a track on the server (push a Like up). Local-only tracks with
+    /// no server copy are skipped.
+    func setLiked(_ track: Track, liked: Bool) {
+        guard let client = store.client, let sid = SubsonicID.serverID(for: track) else { return }
+        Task { try? await client.star(id: sid, starred: liked) }
     }
 
     private func syncPlaylists(_ client: SubsonicClient) async throws {

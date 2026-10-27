@@ -35,7 +35,9 @@ struct HomeView: View {
         NavigationStack {
             ScrollView {
                 if library.tracks.isEmpty {
-                    if library.isScanning {
+                    if let p = sync.progressText {
+                        ProgressView(p).frame(maxWidth: .infinity).padding(.top, 60)
+                    } else if library.isScanning {
                         ProgressView("Scanning…").frame(maxWidth: .infinity).padding(.top, 60)
                     } else {
                         EmptyLibraryHint().padding(.top, 40)

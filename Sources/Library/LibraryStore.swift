@@ -16,6 +16,14 @@ final class LibraryStore: ObservableObject {
     // contentKey -> Track, for resolving a playlist entry to any available source.
     @Published private(set) var trackByContentKey: [String: Track] = [:]
     private var localTracks: [Track] = []
+    /// Offline mode: when on, server tracks that aren't on the device are hidden, so
+    /// the whole library shows only what actually plays without a connection.
+    @Published var offlineOnly: Bool = UserDefaults.standard.bool(forKey: "library.offlineOnly") {
+        didSet {
+            UserDefaults.standard.set(offlineOnly, forKey: "library.offlineOnly")
+            rebuildMerged()
+        }
+    }
 
     private let audioExtensions: Set<String> = [
         "mp3", "m4a", "aac", "flac", "alac", "wav", "aif", "aiff", "caf", "m4b", "ogg"
@@ -78,10 +86,21 @@ final class LibraryStore: ObservableObject {
     /// Replace the server catalog, merge it with the local library (deduping by
     /// content so a song you also hold locally isn't listed twice), and persist it
     /// so the catalog is browsable offline next launch.
-    func mergeRemote(_ remote: [Track]) {
+    func mergeRemote(_ remote: [Track], persist: Bool = true) {
         remoteTracks = remote
         rebuildMerged()
-        saveRemoteCache(remote)
+        if persist { saveRemoteCache(remote) }
+    }
+
+    /// Apply fetched cover art to remote tracks (the post-sync background backfill).
+    func applyRemoteArtwork(_ art: [String: Data]) {
+        guard !art.isEmpty else { return }
+        remoteTracks = remoteTracks.map { t in
+            guard let d = art[t.id] else { return t }
+            var m = t; m.artworkData = d; return m
+        }
+        rebuildMerged()
+        saveRemoteCache(remoteTracks)
     }
 
     /// The server copy of a local song (same content), if the catalog has it.
@@ -94,7 +113,11 @@ final class LibraryStore: ObservableObject {
     private func rebuildMerged() {
         let localKeys = Set(localTracks.map { $0.contentKey })
         var merged = localTracks
-        for r in remoteTracks where !localKeys.contains(r.contentKey) { merged.append(r) }
+        for r in remoteTracks where !localKeys.contains(r.contentKey) {
+            // Offline mode hides server tracks that aren't downloaded/cached.
+            if offlineOnly && !FileManager.default.fileExists(atPath: r.url.path) { continue }
+            merged.append(r)
+        }
         merged.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
         tracks = merged
         rebuildCollections()

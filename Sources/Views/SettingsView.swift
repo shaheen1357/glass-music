@@ -115,6 +115,9 @@ struct SettingsView: View {
                             Spacer()
                             Text(subsonic.username).foregroundStyle(.secondary)
                         }
+                        Toggle(isOn: $library.offlineOnly) {
+                            Label("Offline Mode", systemImage: "wifi.slash")
+                        }
                         Button { Task { await sync.syncNow() } } label: {
                             Label(syncLabel, systemImage: "arrow.triangle.2.circlepath")
                         }
@@ -194,6 +197,7 @@ struct SettingsView: View {
     }
 
     private var syncLabel: String {
+        if let p = sync.progressText { return p }
         switch sync.state {
         case .syncing: return "Syncing…"
         case .failed(let m): return "Sync failed — \(m)"

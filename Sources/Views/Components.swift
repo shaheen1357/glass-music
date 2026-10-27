@@ -176,6 +176,7 @@ struct TrackActions: View {
     var onAddToPlaylist: () -> Void
     @Environment(PlayerEngine.self) private var player
     @EnvironmentObject var playlists: PlaylistStore
+    @Environment(SubsonicSync.self) private var sync: SubsonicSync?
 
     var body: some View {
         if let onPlay {
@@ -190,9 +191,23 @@ struct TrackActions: View {
         Button { onAddToPlaylist() } label: {
             Label("Add to a Playlist…", systemImage: "text.badge.plus")
         }
-        Button { playlists.toggleLike(track) } label: {
+        Button {
+            playlists.toggleLike(track)
+            sync?.setLiked(track, liked: playlists.isLiked(track))
+        } label: {
             Label(playlists.isLiked(track) ? "Remove from Liked Songs" : "Love",
                   systemImage: playlists.isLiked(track) ? "heart.slash" : "heart")
+        }
+        if let sync, SubsonicID.isRemote(track) {
+            if sync.isOnDevice(track) {
+                Button { sync.removeDownload(track) } label: {
+                    Label("Remove Download", systemImage: "arrow.down.circle.fill")
+                }
+            } else {
+                Button { Task { await sync.download(track) } } label: {
+                    Label("Download", systemImage: "arrow.down.circle")
+                }
+            }
         }
         Menu {
             Button("Off") { player.cancelSleepTimer() }
