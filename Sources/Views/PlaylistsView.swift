@@ -212,6 +212,8 @@ struct PlaylistDetailView: View {
     @EnvironmentObject var library: LibraryStore
     @EnvironmentObject var stats: PlayStatsStore
     @Environment(PlayerEngine.self) private var player
+    @Environment(SubsonicSync.self) private var sync: SubsonicSync?
+    @State private var downloading = false
     @State private var showAddSongs = false
     @State private var showEditDetails = false
     @State private var sortMode: PlaylistSort = .custom
@@ -426,6 +428,22 @@ struct PlaylistDetailView: View {
             } label: {
                 Image(systemName: "arrow.up.arrow.down")
                     .font(.title3).foregroundStyle(.primary)
+            }
+            if let sync, storedTracks.contains(where: { SubsonicID.isRemote($0) }) {
+                Button {
+                    Task {
+                        downloading = true
+                        await sync.download(storedTracks.filter { SubsonicID.isRemote($0) })
+                        downloading = false
+                    }
+                } label: {
+                    if downloading {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "arrow.down.circle").font(.title3).foregroundStyle(.primary)
+                    }
+                }
+                .disabled(downloading)
             }
             Spacer(minLength: 8)
             Button {

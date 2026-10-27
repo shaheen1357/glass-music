@@ -224,6 +224,7 @@ struct TrackRow: View {
     var onPlay: (() -> Void)? = nil
     @Environment(PlayerEngine.self) private var player
     @EnvironmentObject var playlists: PlaylistStore
+    @Environment(SubsonicSync.self) private var sync: SubsonicSync?
     @State private var showAdd = false
 
     private var isCurrent: Bool { player.currentTrack?.id == track.id }
@@ -245,6 +246,7 @@ struct TrackRow: View {
                     if playlists.isLiked(track) {
                         Image(systemName: "heart.fill").font(.caption).foregroundStyle(Color.accentColor)
                     }
+                    offlineBadge
                     if isCurrent {
                         Image(systemName: player.isPlaying ? "waveform" : "pause.fill")
                             .font(.footnote)
@@ -265,6 +267,21 @@ struct TrackRow: View {
         }
         .sheet(isPresented: $showAdd) {
             AddToPlaylistView(track: track).environmentObject(playlists)
+        }
+    }
+
+    // On-device state for a server track: filled arrow = downloaded for offline,
+    // cloud = streams (not yet on device). Local / loosely-cached show nothing.
+    @ViewBuilder private var offlineBadge: some View {
+        if let sync, SubsonicID.isRemote(track) {
+            switch sync.availability(track) {
+            case .downloaded:
+                Image(systemName: "arrow.down.circle.fill").font(.caption2).foregroundStyle(.secondary)
+            case .streams:
+                Image(systemName: "cloud").font(.caption2).foregroundStyle(.secondary)
+            case .cached, .local:
+                EmptyView()
+            }
         }
     }
 }

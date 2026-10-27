@@ -101,6 +101,11 @@ final class PlayerEngine {
     private var sleepTask: Task<Void, Never>?
     var onPlay: ((Track) -> Void)?
 
+    /// Resolve a track to a local file to play: a local track returns as-is, a
+    /// remote one is downloaded to the cache first. Set by the app; nil = local-only.
+    var ensureLocalURL: ((Track) async -> URL?)?
+    private var startToken = 0                             // guards async remote-start races
+
     // MARK: Session persistence (last song + position + shuffle/repeat + queue)
     private struct PersistedState: Codable {
         var queueIDs: [String]
@@ -399,6 +404,27 @@ final class PlayerEngine {
 
     private func startCurrent() {
         guard let track = currentTrack else { return }
+        startToken &+= 1
+        let token = startToken
+        // Fast path — the file is already on disk (every local track, and any cached
+        // remote one): run synchronously, exactly as before, no behaviour change.
+        if FileManager.default.fileExists(atPath: track.url.path) {
+            startCurrentResolved(track, url: track.url)
+            return
+        }
+        // Remote and not cached yet: fetch it, then start — unless a newer request
+        // (next / previous / stop) superseded this one while it downloaded.
+        isPlaying = false
+        stopDisplayTimer()
+        updateNowPlayingInfo()
+        Task { @MainActor [weak self] in
+            guard let self, let url = await self.ensureLocalURL?(track) else { return }
+            guard token == self.startToken, self.currentTrack?.id == track.id else { return }
+            self.startCurrentResolved(track, url: url)
+        }
+    }
+
+    private func startCurrentResolved(_ track: Track, url: URL) {
         onPlay?(track)
         isSuspended = false
         needsReschedule = false
@@ -409,7 +435,7 @@ final class PlayerEngine {
         scheduleGeneration &+= 1                // ...neutralize it even if the load below fails
 
         do {
-            let file = try AVAudioFile(forReading: track.url)
+            let file = try AVAudioFile(forReading: url)
             audioFile = file
             sampleRate = file.processingFormat.sampleRate
             audioLengthSamples = file.length
@@ -433,12 +459,21 @@ final class PlayerEngine {
             startDisplayTimer()
             updateNowPlayingInfo()
             savePlaybackState()
+            prefetchUpcoming()
         } catch {
             print("Failed to load \(track.title): \(error)")
             audioFile = nil
             isPlaying = false
             stopDisplayTimer()
         }
+    }
+
+    /// Warm the cache for the next track so a gapless/crossfade hand-off (which
+    /// opens the file synchronously) finds it on disk. No-op for local tracks.
+    private func prefetchUpcoming() {
+        guard let hook = ensureLocalURL, let next = upcomingTrack(),
+              !FileManager.default.fileExists(atPath: next.url.path) else { return }
+        Task { _ = await hook(next) }
     }
 
     private func scheduleSegment(from startFrame: AVAudioFramePosition) {
@@ -661,6 +696,9 @@ final class PlayerEngine {
 
     private func beginTransition(to next: Track, fade: Double) {
         guard let renderTime = playerNode.lastRenderTime, playerNode.isPlaying else { return }
+        // Only hand off to a track whose file is already on disk; otherwise let the
+        // plain end-of-track path advance (which downloads it) — a tiny gap at worst.
+        guard FileManager.default.fileExists(atPath: next.url.path) else { return }
         // Gapless needs a valid host clock for a sample-accurate join; without it,
         // do nothing and let the plain end-of-track path advance (a tiny gap). We
         // haven't touched any state yet, so the active node's completion is intact.
@@ -944,6 +982,16 @@ final class PlayerEngine {
     /// `seconds`. resume() (or a play tap) picks up from here via needsReschedule.
     private func loadCurrentPaused(at seconds: Double) {
         guard let track = currentTrack else { return }
+        // Remote track not cached yet: show it as current (paused) without loading
+        // the engine; a play tap routes through startCurrent, which fetches it.
+        guard FileManager.default.fileExists(atPath: track.url.path) else {
+            audioFile = nil
+            duration = track.duration
+            currentTime = min(max(0, seconds), track.duration)
+            isPlaying = false
+            updateNowPlayingInfo()
+            return
+        }
         idleNode.stop(); idleNode.volume = 1; playerNode.volume = 1
         playerNode.stop()
         scheduleGeneration &+= 1

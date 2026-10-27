@@ -222,10 +222,64 @@ final class PlaylistStore: ObservableObject {
         save()
     }
 
+    // MARK: - Server sync (Subsonic)
+    /// Remember each resolvable entry's content key, so it survives the local file
+    /// later being deleted — the key then finds the same song from the server.
+    func reconcileKeys(using library: LibraryStore) {
+        var dirty = false
+        for i in playlists.indices {
+            var keys = playlists[i].trackKeys ?? [:]
+            var localChange = false
+            for id in playlists[i].trackIDs where keys[id] == nil {
+                if let t = library.tracksByID[id] { keys[id] = t.contentKey; localChange = true }
+            }
+            if localChange { playlists[i].trackKeys = keys; dirty = true }
+        }
+        if dirty { save() }
+    }
+
+    /// Pull server playlists in as server-backed user playlists (matched by server
+    /// id), so a reinstall restores them. The server is the source of truth for the
+    /// playlists it already knows.
+    func applyServerPlaylists(_ server: [(serverID: String, name: String, trackIDs: [String])]) {
+        for s in server {
+            if let i = playlists.firstIndex(where: { $0.serverID == s.serverID }) {
+                playlists[i].name = s.name
+                playlists[i].trackIDs = s.trackIDs
+            } else {
+                var p = Playlist(id: UUID().uuidString, name: s.name, kind: .user, trackIDs: s.trackIDs)
+                p.serverID = s.serverID
+                playlists.append(p)
+            }
+        }
+        save()
+    }
+
+    func setServerID(_ serverID: String, forID id: String) {
+        guard let i = playlists.firstIndex(where: { $0.id == id }) else { return }
+        playlists[i].serverID = serverID
+        save()
+    }
+
+    /// Fold server-starred songs into Liked without dropping local likes.
+    func mergeLikedFromServer(_ ids: [String]) {
+        guard let i = playlists.firstIndex(where: { $0.kind == .liked }) else { return }
+        var existing = playlists[i].trackIDs
+        let have = Set(existing)
+        for id in ids where !have.contains(id) { existing.insert(id, at: 0) }
+        playlists[i].trackIDs = existing
+        save()
+    }
+
     // MARK: - Resolve
     func tracks(for playlist: Playlist, in library: LibraryStore) -> [Track] {
         // O(k) lookup against the library's prebuilt id->Track map (rebuilt only
-        // on scan), instead of rebuilding a whole-library dictionary per call.
-        playlist.trackIDs.compactMap { library.tracksByID[$0] }
+        // on scan). If an entry's exact id is gone (e.g. its local file was
+        // deleted), fall back to the same song from any source via its content key.
+        playlist.trackIDs.compactMap { id in
+            if let t = library.tracksByID[id] { return t }
+            if let key = playlist.trackKeys?[id], let t = library.trackByContentKey[key] { return t }
+            return nil
+        }
     }
 }

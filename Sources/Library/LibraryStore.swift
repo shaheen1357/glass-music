@@ -11,6 +11,11 @@ final class LibraryStore: ObservableObject {
     @Published private(set) var artists: [ArtistGroup] = []
     @Published private(set) var isScanning = false
     @Published private(set) var isFetchingArtwork = false
+    // Server catalog (streamed), merged into `tracks` alongside local files.
+    @Published private(set) var remoteTracks: [Track] = []
+    // contentKey -> Track, for resolving a playlist entry to any available source.
+    @Published private(set) var trackByContentKey: [String: Track] = [:]
+    private var localTracks: [Track] = []
 
     private let audioExtensions: Set<String> = [
         "mp3", "m4a", "aac", "flac", "alac", "wav", "aif", "aiff", "caf", "m4b", "ogg"
@@ -28,16 +33,20 @@ final class LibraryStore: ObservableObject {
         isScanning = true
         defer { isScanning = false }
 
-        // Instant: paint last session's library from the cache before touching disk.
-        if !force, tracks.isEmpty, let cached = await readCache() {
-            tracks = cached
-            rebuildCollections()
+        // Instant: paint last session's library (local + server catalog) from cache
+        // before touching disk — so browsing works offline and appears instantly.
+        if !force, localTracks.isEmpty, let cached = await readCache() {
+            localTracks = cached
+            if remoteTracks.isEmpty { remoteTracks = loadRemoteCache() ?? [] }
+            rebuildMerged()
+        } else if remoteTracks.isEmpty {
+            remoteTracks = loadRemoteCache() ?? []
         }
 
         // Reuse already-known tracks by id so we don't re-parse them; only new
         // files hit makeTrack. Rebuilding from the live file list also drops any
         // tracks whose files are gone.
-        let known = force ? [:] : Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let known = force ? [:] : Dictionary(localTracks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let urls = audioFileURLs()
         var result: [Track] = []
         var seenIDs = Set<String>()
@@ -59,9 +68,53 @@ final class LibraryStore: ObservableObject {
         #if targetEnvironment(simulator)
         if result.isEmpty { result = Self.demoTracks() }
         #endif
-        tracks = result
-        rebuildCollections()
+        localTracks = result
+        if remoteTracks.isEmpty { remoteTracks = loadRemoteCache() ?? [] }
+        rebuildMerged()
         saveCache(result)
+    }
+
+    // MARK: - Remote catalog (server library, merged with local)
+    /// Replace the server catalog, merge it with the local library (deduping by
+    /// content so a song you also hold locally isn't listed twice), and persist it
+    /// so the catalog is browsable offline next launch.
+    func mergeRemote(_ remote: [Track]) {
+        remoteTracks = remote
+        rebuildMerged()
+        saveRemoteCache(remote)
+    }
+
+    /// The server copy of a local song (same content), if the catalog has it.
+    func remoteTwin(of track: Track) -> Track? {
+        remoteTracks.first { $0.contentKey == track.contentKey }
+    }
+
+    /// Merge local + remote into `tracks`, preferring the local copy when a song
+    /// exists in both, then rebuild the derived collections and the content index.
+    private func rebuildMerged() {
+        let localKeys = Set(localTracks.map { $0.contentKey })
+        var merged = localTracks
+        for r in remoteTracks where !localKeys.contains(r.contentKey) { merged.append(r) }
+        merged.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        tracks = merged
+        rebuildCollections()
+        trackByContentKey = Dictionary(merged.map { ($0.contentKey, $0) }, uniquingKeysWith: { a, _ in a })
+    }
+
+    private var remoteCacheURL: URL {
+        let base = (try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                                 appropriateFor: nil, create: true)) ?? documentsURL
+        return base.appendingPathComponent("remote-catalog.json")
+    }
+    private func loadRemoteCache() -> [Track]? {
+        guard let data = try? Data(contentsOf: remoteCacheURL) else { return nil }
+        return try? JSONDecoder().decode([Track].self, from: data)
+    }
+    private func saveRemoteCache(_ tracks: [Track]) {
+        let url = remoteCacheURL
+        Task.detached(priority: .utility) {
+            if let data = try? JSONEncoder().encode(tracks) { try? data.write(to: url, options: .atomic) }
+        }
     }
 
     // MARK: - Library cache (instant launch; survives sessions)
@@ -301,7 +354,7 @@ final class LibraryStore: ObservableObject {
         var triedAlbums = Set<String>()
         var updates: [String: Data] = [:]      // track id -> thumbnail
 
-        for t in tracks where t.artworkData == nil {
+        for t in localTracks where t.artworkData == nil {
             let key = "\(t.albumArtist ?? t.artist)\u{1}\(t.album)"
             if let art = artByAlbum[key] {
                 updates[t.id] = art
@@ -315,12 +368,12 @@ final class LibraryStore: ObservableObject {
             }
         }
         guard !updates.isEmpty else { return }
-        tracks = tracks.map { tk in
+        localTracks = localTracks.map { tk in
             guard let art = updates[tk.id] else { return tk }
             var m = tk; m.artworkData = art; return m
         }
-        rebuildCollections()
-        saveCache(tracks)
+        rebuildMerged()
+        saveCache(localTracks)
     }
 
     /// The album / artist a track belongs to (for "Go to Album/Artist").

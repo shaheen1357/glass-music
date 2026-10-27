@@ -13,8 +13,12 @@ final class AppServices {
     let playlists = PlaylistStore()
     let stats = PlayStatsStore()
     let recents = RecentSearchStore()
+    let subsonic = SubsonicStore()
+    let sync: SubsonicSync
 
-    private init() {}
+    private init() {
+        sync = SubsonicSync(store: subsonic, library: library, playlists: playlists)
+    }
 
     // MARK: - Intent actions
     func playPause() { player.togglePlayPause() }

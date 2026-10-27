@@ -8,8 +8,11 @@ struct SettingsView: View {
     @EnvironmentObject var library: LibraryStore
     @EnvironmentObject var playlists: PlaylistStore
     @EnvironmentObject var stats: PlayStatsStore
+    @Environment(SubsonicSync.self) private var sync
+    @Environment(SubsonicStore.self) private var subsonic
     @Environment(\.dismiss) private var dismiss
     @State private var showImport = false
+    @State private var showServer = false
     @State private var exportItem: ExportItem?
     @State private var showRestore = false
     @State private var restoreMessage: String?
@@ -100,6 +103,45 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    if subsonic.isConfigured {
+                        HStack {
+                            Label("Server", systemImage: "externaldrive.connected.to.line.below")
+                            Spacer()
+                            Text(subsonic.serverURLString).foregroundStyle(.secondary)
+                                .lineLimit(1).truncationMode(.middle)
+                        }
+                        HStack {
+                            Label("Account", systemImage: "person")
+                            Spacer()
+                            Text(subsonic.username).foregroundStyle(.secondary)
+                        }
+                        Button { Task { await sync.syncNow() } } label: {
+                            Label(syncLabel, systemImage: "arrow.triangle.2.circlepath")
+                        }
+                        .disabled(sync.state == .syncing)
+                        HStack {
+                            Label("Downloaded", systemImage: "arrow.down.circle")
+                            Spacer()
+                            Text(cacheSizeText).foregroundStyle(.secondary)
+                        }
+                        Button(role: .destructive) { sync.clearCache() } label: {
+                            Label("Clear Downloaded Cache", systemImage: "trash")
+                        }
+                        Button(role: .destructive) { subsonic.signOut() } label: {
+                            Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
+                        }
+                    } else {
+                        Button { showServer = true } label: {
+                            Label("Connect to Server", systemImage: "link")
+                        }
+                    }
+                } header: {
+                    Text("Server (Streaming)")
+                } footer: {
+                    Text("Stream and download from your own Navidrome/Subsonic server. Playlists and Liked Songs sync up, so they come back after a reinstall.")
+                }
+
+                Section {
                     Button {
                         if let url = BackupService.makeFile(playlists: playlists, stats: stats) {
                             exportItem = ExportItem(url: url)
@@ -135,6 +177,7 @@ struct SettingsView: View {
                 if case .success(let urls) = result { library.importFiles(urls) }
             }
             .sheet(item: $exportItem) { ActivityView(items: [$0.url]) }
+            .sheet(isPresented: $showServer) { ServerConnectSheet().environment(subsonic) }
             .fileImporter(isPresented: $showRestore, allowedContentTypes: [.json],
                           allowsMultipleSelection: false) { result in
                 if case .success(let urls) = result, let url = urls.first {
@@ -148,5 +191,64 @@ struct SettingsView: View {
                 Button("OK", role: .cancel) { }
             } message: { Text(restoreMessage ?? "") }
         }
+    }
+
+    private var syncLabel: String {
+        switch sync.state {
+        case .syncing: return "Syncing…"
+        case .failed(let m): return "Sync failed — \(m)"
+        default: return "Sync Now"
+        }
+    }
+    private var cacheSizeText: String {
+        ByteCountFormatter.string(fromByteCount: sync.cacheSize, countStyle: .file)
+    }
+}
+
+// MARK: - Connect to a Subsonic / Navidrome server
+struct ServerConnectSheet: View {
+    @Environment(SubsonicStore.self) private var subsonic
+    @Environment(\.dismiss) private var dismiss
+    @State private var url = ""
+    @State private var user = ""
+    @State private var password = ""
+    @State private var connecting = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Server address", text: $url)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .keyboardType(.URL)
+                    TextField("Username", text: $user)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    SecureField("Password", text: $password)
+                } footer: {
+                    if case .failed(let m) = subsonic.state {
+                        Text(m).foregroundStyle(.red)
+                    } else {
+                        Text("e.g. http://140.245.229.48:4533 — your own Navidrome/Subsonic server.")
+                    }
+                }
+            }
+            .navigationTitle("Connect to Server")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(connecting ? "Connecting…" : "Connect") {
+                        connecting = true
+                        Task {
+                            await subsonic.connect(serverURL: url, username: user, password: password)
+                            connecting = false
+                            if subsonic.isConfigured { dismiss() }
+                        }
+                    }
+                    .disabled(connecting || url.isEmpty || user.isEmpty || password.isEmpty)
+                }
+            }
+        }
+        .presentationDetents([.medium])
     }
 }

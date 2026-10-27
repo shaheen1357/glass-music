@@ -6,6 +6,8 @@ struct HomeView: View {
     @Environment(PlayerEngine.self) private var player
     @EnvironmentObject var playlists: PlaylistStore
     @EnvironmentObject var stats: PlayStatsStore
+    @Environment(SubsonicSync.self) private var sync
+    @Environment(SubsonicStore.self) private var subsonic
     @State private var showSettings = false
     @State private var mixes: [Mix] = []
 
@@ -68,6 +70,8 @@ struct HomeView: View {
                     .environmentObject(library)
                     .environmentObject(playlists)
                     .environmentObject(stats)
+                    .environment(sync)
+                    .environment(subsonic)
             }
             .task(id: library.tracks.count) {
                 mixes = MixBuilder.mixes(tracks: library.tracks, stats: stats,
