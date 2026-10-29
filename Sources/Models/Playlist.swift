@@ -14,6 +14,13 @@ struct TrackMeta: Codable, Hashable {
     var artist: String
     var album: String
     var duration: Double
+
+    /// Must match Track.contentKey exactly, so a playlist entry can be re-keyed from its
+    /// stored metadata (artist + album + title, no track/disc numbers).
+    var contentKey: String {
+        func norm(_ s: String) -> String { s.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) }
+        return "\(norm(artist))\u{1}\(norm(album))\u{1}\(norm(title))"
+    }
 }
 
 struct Playlist: Identifiable, Codable, Hashable {

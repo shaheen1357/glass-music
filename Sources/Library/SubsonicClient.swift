@@ -359,8 +359,13 @@ extension Track {
     /// its server twin so a playlist survives the local file being deleted, and so
     /// the same song from two sources collapses into one.
     var contentKey: String {
+        // Artist + album + title only. Track and disc numbers are deliberately excluded:
+        // the local FLAC reader and Navidrome derive them differently from the same file
+        // (Navidrome defaults disc to 1, a file with no disc tag reads as 0), so including
+        // them made a song's local and server identities disagree and mis-pointed every
+        // locally-held song to the server.
         func norm(_ s: String) -> String { s.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) }
-        return "\(norm(artist))\u{1}\(norm(album))\u{1}\(norm(title))\u{1}\(trackNumber)\u{1}\(discNumber)"
+        return "\(norm(artist))\u{1}\(norm(album))\u{1}\(norm(title))"
     }
 }
 

@@ -47,6 +47,15 @@ final class PlaylistStore: ObservableObject {
         playlists = decoded.map { pl in
             var p = pl
             p.trackIDs = p.trackIDs.map { ($0 as NSString).lastPathComponent }
+            // Re-key every entry from its stored metadata so keys always match the current
+            // content-key formula. This repairs entries saved under the old formula (which
+            // included track/disc numbers) so a locally-held song resolves to its local
+            // file again instead of streaming.
+            if let meta = p.trackMeta {
+                var keys = p.trackKeys ?? [:]
+                for (id, m) in meta { keys[id] = m.contentKey }
+                p.trackKeys = keys
+            }
             return p
         }
     }
