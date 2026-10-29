@@ -242,15 +242,13 @@ final class PlaylistStore: ObservableObject {
     /// id), so a reinstall restores them. The server is the source of truth for the
     /// playlists it already knows.
     func applyServerPlaylists(_ server: [(serverID: String, name: String, trackIDs: [String])]) {
-        for s in server {
-            if let i = playlists.firstIndex(where: { $0.serverID == s.serverID }) {
-                playlists[i].name = s.name
-                playlists[i].trackIDs = s.trackIDs
-            } else {
-                var p = Playlist(id: UUID().uuidString, name: s.name, kind: .user, trackIDs: s.trackIDs)
-                p.serverID = s.serverID
-                playlists.append(p)
-            }
+        // Additive only: add server playlists the app doesn't already have (by
+        // serverID), so a reinstall restores them — but never overwrite or shrink an
+        // existing local playlist from a (possibly incomplete) server copy.
+        for s in server where !playlists.contains(where: { $0.serverID == s.serverID }) {
+            var p = Playlist(id: UUID().uuidString, name: s.name, kind: .user, trackIDs: s.trackIDs)
+            p.serverID = s.serverID
+            playlists.append(p)
         }
         save()
     }
