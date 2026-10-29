@@ -308,7 +308,33 @@ final class SubsonicSync {
 
     private func syncLiked(_ client: SubsonicClient) async throws {
         let songs = try await client.starredSongs()
+        // Pull: fold server stars into Liked (union; never drops a local like).
         playlists.mergeLikedFromServer(songs.map { SubsonicID.prefix + $0.id })
+    }
+
+    /// Star any liked song that has a server copy but isn't starred on the server yet.
+    /// Runs on every push path, so a like made while offline reaches the server on the
+    /// next ordinary open — the immediate star at like-time can't, with no connection.
+    private func pushLikedStars(_ client: SubsonicClient) async {
+        guard let songs = try? await client.starredSongs() else { return }
+        let starred = Set(songs.map { $0.id })
+        for sid in likedServerIDs() where !starred.contains(sid) {
+            try? await client.star(id: sid, starred: true)
+        }
+    }
+
+    /// Server ids for the phone's currently-liked songs — each song's own server id, or a
+    /// local file's server twin by content. Local-only songs with no server copy are
+    /// skipped (there's nothing to star yet).
+    private func likedServerIDs() -> [String] {
+        guard let liked = playlists.liked else { return [] }
+        return liked.trackIDs.compactMap { id in
+            if id.hasPrefix(SubsonicID.prefix) { return String(id.dropFirst(SubsonicID.prefix.count)) }
+            if let t = library.tracksByID[id], let twin = library.remoteTwin(of: t) {
+                return SubsonicID.serverID(for: twin)
+            }
+            return nil
+        }
     }
 
     // MARK: - Push local user playlists to the server (phone edits mirror up)
@@ -359,6 +385,7 @@ final class SubsonicSync {
                 }
             } catch { /* best-effort per playlist */ }
         }
+        await pushLikedStars(client)
     }
 
     /// On a server-authoritative pass, push up only the playlists the server doesn't
@@ -376,6 +403,7 @@ final class SubsonicSync {
                 playlists.setServerID(created.id, forID: pl.id)
             }
         }
+        await pushLikedStars(client)
     }
 
     // MARK: - Offline availability / downloads

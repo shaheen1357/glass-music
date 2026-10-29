@@ -67,3 +67,10 @@ struct ArtistGroup: Identifiable, Hashable {
     var tracks: [Track]
     var albumCount: Int { Set(tracks.map { $0.album }).count }
 }
+
+extension Track {
+    /// A placeholder for a playlist song that's on neither the device nor the server
+    /// yet (added locally, not uploaded). Shown greyed and not playable until its file
+    /// lands on the server and a catalog sync matches it by content.
+    var isPending: Bool { url.path.hasPrefix("/pending/") }
+}

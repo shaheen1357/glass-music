@@ -243,10 +243,11 @@ struct TrackRow: View {
     @State private var showAdd = false
 
     private var isCurrent: Bool { player.currentTrack?.id == track.id }
+    private var isPending: Bool { track.isPending }
 
     var body: some View {
         HStack(spacing: 8) {
-            Button { onPlay?() } label: {
+            Button { if !isPending { onPlay?() } } label: {
                 HStack(spacing: 12) {
                     if showArtwork {
                         ArtworkView(id: track.id, data: track.artworkData, corner: 6).frame(width: 48, height: 48)
@@ -261,6 +262,10 @@ struct TrackRow: View {
                     if playlists.isLiked(track) {
                         Image(systemName: "heart.fill").font(.caption).foregroundStyle(Color.accentColor)
                     }
+                    if isPending {
+                        // On the phone's playlist but not on the server yet — upload it.
+                        Image(systemName: "arrow.up.circle").font(.caption2).foregroundStyle(.secondary)
+                    }
                     offlineBadge
                     if isCurrent {
                         Image(systemName: player.isPlaying ? "waveform" : "pause.fill")
@@ -270,8 +275,10 @@ struct TrackRow: View {
                     }
                 }
                 .contentShape(Rectangle())
+                .opacity(isPending ? 0.5 : 1)
             }
             .buttonStyle(.plain)
+            .disabled(isPending)
 
             Menu {
                 TrackActions(track: track, onPlay: onPlay, onAddToPlaylist: { showAdd = true })
