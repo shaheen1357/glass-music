@@ -127,6 +127,10 @@ final class PlaylistStore: ObservableObject {
         var keys = playlists[index].trackKeys ?? [:]
         keys[track.id] = track.contentKey
         playlists[index].trackKeys = keys
+        var meta = playlists[index].trackMeta ?? [:]
+        meta[track.id] = TrackMeta(title: track.title, artist: track.artist,
+                                   album: track.album, duration: track.duration)
+        playlists[index].trackMeta = meta
     }
 
     // MARK: - CRUD
@@ -246,28 +250,146 @@ final class PlaylistStore: ObservableObject {
         var dirty = false
         for i in playlists.indices {
             var keys = playlists[i].trackKeys ?? [:]
+            var meta = playlists[i].trackMeta ?? [:]
             var localChange = false
-            for id in playlists[i].trackIDs where keys[id] == nil {
-                if let t = library.tracksByID[id] { keys[id] = t.contentKey; localChange = true }
+            for id in playlists[i].trackIDs where keys[id] == nil || meta[id] == nil {
+                if let t = library.tracksByID[id] {
+                    keys[id] = t.contentKey
+                    meta[id] = TrackMeta(title: t.title, artist: t.artist, album: t.album, duration: t.duration)
+                    localChange = true
+                }
             }
-            if localChange { playlists[i].trackKeys = keys; dirty = true }
+            if localChange { playlists[i].trackKeys = keys; playlists[i].trackMeta = meta; dirty = true }
         }
         if dirty { save() }
     }
 
-    /// Pull server playlists in as server-backed user playlists (matched by server
-    /// id), so a reinstall restores them. The server is the source of truth for the
-    /// playlists it already knows.
-    func applyServerPlaylists(_ server: [(serverID: String, name: String, trackIDs: [String])]) {
-        // Additive only: add server playlists the app doesn't already have (by
-        // serverID), so a reinstall restores them — but never overwrite or shrink an
-        // existing local playlist from a (possibly incomplete) server copy.
-        for s in server where !playlists.contains(where: { $0.serverID == s.serverID }) {
-            var p = Playlist(id: UUID().uuidString, name: s.name, kind: .user, trackIDs: s.trackIDs)
-            p.serverID = s.serverID
-            playlists.append(p)
+    /// One server playlist resolved to durable entries plus a display snapshot.
+    struct ServerEntry {
+        let id: String        // "subsonic:<songid>"
+        let key: String       // content key
+        let meta: TrackMeta
+    }
+    struct ServerPlaylist {
+        let serverID: String
+        let name: String
+        let entries: [ServerEntry]
+    }
+
+    /// Additive: bring down only server playlists the phone doesn't already have (by
+    /// server id or name). Never overwrites or shrinks an existing one — the cheap open
+    /// path, so a new server playlist (e.g. hindi) reaches the phone without disturbing
+    /// anything.
+    func applyServerPlaylists(_ server: [ServerPlaylist]) {
+        var changed = false
+        for s in server {
+            if playlists.contains(where: { $0.serverID == s.serverID }) { continue }
+            if playlists.contains(where: { $0.kind == .user && $0.name == s.name }) { continue }
+            appendServerPlaylist(s)
+            changed = true
+        }
+        if changed { save() }
+    }
+
+    /// Server-authoritative: the one-time repair and a fresh install. A playlist that
+    /// exists on both sides is replaced by the server's copy (matched by server id, then
+    /// name); server-only playlists are added. The baseline is seeded from the server so
+    /// later syncs merge from a trustworthy start. Phone-only playlists are left for the
+    /// caller to push up.
+    func applyServerPlaylistsAuthoritative(_ server: [ServerPlaylist]) {
+        for s in server {
+            if let i = indexMatching(s) {
+                setEntries(s.entries, at: i)
+                playlists[i].serverID = s.serverID
+                playlists[i].syncBaseline = s.entries.map { $0.key }
+            } else {
+                appendServerPlaylist(s)
+            }
         }
         save()
+    }
+
+    /// Steady-state three-way merge: for each server playlist matched to a phone one,
+    /// combine both sides' changes against the stored baseline — an add on either side
+    /// survives, a real removal on either side is honoured. Server-only playlists are
+    /// added; phone-only playlists are untouched (the caller pushes them up).
+    func mergeServerPlaylists(_ server: [ServerPlaylist], using library: LibraryStore) {
+        for s in server {
+            guard let i = indexMatching(s) else { appendServerPlaylist(s); continue }
+            mergeOne(at: i, server: s, using: library)
+            playlists[i].serverID = s.serverID
+        }
+        save()
+    }
+
+    private func indexMatching(_ s: ServerPlaylist) -> Int? {
+        playlists.firstIndex(where: { $0.serverID == s.serverID })
+            ?? playlists.firstIndex(where: { $0.kind == .user && $0.name == s.name })
+    }
+
+    private func appendServerPlaylist(_ s: ServerPlaylist) {
+        var p = Playlist(id: UUID().uuidString, name: s.name, kind: .user, trackIDs: [])
+        p.serverID = s.serverID
+        p.syncBaseline = s.entries.map { $0.key }
+        playlists.append(p)
+        setEntries(s.entries, at: playlists.count - 1)
+    }
+
+    private func setEntries(_ entries: [ServerEntry], at i: Int) {
+        playlists[i].trackIDs = entries.map { $0.id }
+        playlists[i].trackKeys = Dictionary(entries.map { ($0.id, $0.key) }, uniquingKeysWith: { a, _ in a })
+        playlists[i].trackMeta = Dictionary(entries.map { ($0.id, $0.meta) }, uniquingKeysWith: { a, _ in a })
+    }
+
+    /// A phone entry's content key: its stored key, else resolved from the library.
+    private func keyFor(_ id: String, in playlist: Playlist, library: LibraryStore) -> String? {
+        if let k = playlist.trackKeys?[id] { return k }
+        return library.tracksByID[id]?.contentKey
+    }
+
+    private func mergeOne(at i: Int, server s: ServerPlaylist, using library: LibraryStore) {
+        let p = playlists[i]
+        var phoneKeyByID: [String: String] = [:]
+        for id in p.trackIDs { if let k = keyFor(id, in: p, library: library) { phoneKeyByID[id] = k } }
+        let phoneKeys = Set(phoneKeyByID.values)
+        let serverEntryByKey = Dictionary(s.entries.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
+        let serverKeys = Set(s.entries.map { $0.key })
+        let base = Set(p.syncBaseline ?? [])
+
+        // A song stays unless it was in the baseline and one side genuinely removed it.
+        let removed = base.subtracting(phoneKeys).union(base.subtracting(serverKeys))
+        func keep(_ k: String) -> Bool { !removed.contains(k) }
+
+        // Order: the phone's current order first, then server-only additions appended.
+        var orderedKeys: [String] = []
+        var seen = Set<String>()
+        for id in p.trackIDs {
+            guard let k = phoneKeyByID[id], keep(k), seen.insert(k).inserted else { continue }
+            orderedKeys.append(k)
+        }
+        for e in s.entries where keep(e.key) && !seen.contains(e.key) {
+            seen.insert(e.key)
+            orderedKeys.append(e.key)
+        }
+
+        // Materialise each kept key, preferring the server-anchored entry so it streams.
+        var phoneMetaByKey: [String: TrackMeta] = [:]
+        for (id, k) in phoneKeyByID { if let tm = p.trackMeta?[id] { phoneMetaByKey[k] = tm } }
+        var ids: [String] = []
+        var keys: [String: String] = [:]
+        var meta: [String: TrackMeta] = [:]
+        for k in orderedKeys {
+            if let e = serverEntryByKey[k] {
+                ids.append(e.id); keys[e.id] = k; meta[e.id] = e.meta
+            } else if let match = phoneKeyByID.first(where: { $0.value == k }) {
+                ids.append(match.key); keys[match.key] = k
+                if let tm = phoneMetaByKey[k] { meta[match.key] = tm }
+            }
+        }
+        playlists[i].trackIDs = ids
+        playlists[i].trackKeys = keys
+        playlists[i].trackMeta = meta
+        playlists[i].syncBaseline = orderedKeys
     }
 
     func setServerID(_ serverID: String, forID id: String) {
@@ -288,12 +410,23 @@ final class PlaylistStore: ObservableObject {
 
     // MARK: - Resolve
     func tracks(for playlist: Playlist, in library: LibraryStore) -> [Track] {
-        // O(k) lookup against the library's prebuilt id->Track map (rebuilt only
-        // on scan). If an entry's exact id is gone (e.g. its local file was
-        // deleted), fall back to the same song from any source via its content key.
+        // Resolve by content FIRST: the content index holds the best available source
+        // for a song — the local file if it's on the device, otherwise the server copy
+        // (which streams). So deleting a local file switches that track to streaming
+        // instead of dropping it from the playlist. Fall back to a direct id lookup for
+        // any entry that hasn't got a content key yet.
         playlist.trackIDs.compactMap { id in
-            if let t = library.tracksByID[id] { return t }
             if let key = playlist.trackKeys?[id], let t = library.trackByContentKey[key] { return t }
+            if let t = library.tracksByID[id] { return t }
+            // Not resolvable to a real source. Online, keep the song visible as a
+            // placeholder built from its stored metadata (pending upload / schema-only);
+            // offline, hide it so a playlist shows only what actually plays.
+            if !library.effectiveOffline, let m = playlist.trackMeta?[id] {
+                return Track(id: id, url: URL(fileURLWithPath: "/pending/\(id)"),
+                             title: m.title, artist: m.artist, album: m.album,
+                             trackNumber: 0, duration: m.duration, artworkData: nil,
+                             dateAdded: .distantPast)
+            }
             return nil
         }
     }

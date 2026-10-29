@@ -141,6 +141,16 @@ struct SubsonicClient: Sendable {
         try check(body.status, body.error)
     }
 
+    // MARK: - Scan status (cheap change probe)
+    /// The server's media-file count (and whether a scan is running). One tiny call —
+    /// if the count hasn't moved since last time, the catalog hasn't changed and the
+    /// client can skip walking it on open.
+    func scanStatus() async throws -> (scanning: Bool, count: Int) {
+        let body = try await get(SubEnvelope<ScanStatusBody>.self, "getScanStatus").response
+        try check(body.status, body.error)
+        return (body.scanStatus?.scanning ?? false, body.scanStatus?.count ?? 0)
+    }
+
     // MARK: - Playlists (server-side, so they survive a reinstall)
     func serverPlaylists() async throws -> [SubPlaylist] {
         let body = try await get(SubEnvelope<PlaylistsBody>.self, "getPlaylists").response
@@ -277,6 +287,12 @@ struct SubSearchResult: Decodable {
     var album: [SubAlbum]? = nil
     var song: [SubChild]? = nil
 }
+
+struct ScanStatusBody: Decodable {
+    let status: String?; let error: SubApiError?
+    let scanStatus: SubScanStatus?
+}
+struct SubScanStatus: Decodable { let scanning: Bool?; let count: Int? }
 
 struct PlaylistsBody: Decodable {
     let status: String?; let error: SubApiError?

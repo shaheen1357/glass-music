@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import UIKit
 import Combine
+import Network
 
 @MainActor
 final class LibraryStore: ObservableObject {
@@ -16,13 +17,31 @@ final class LibraryStore: ObservableObject {
     // contentKey -> Track, for resolving a playlist entry to any available source.
     @Published private(set) var trackByContentKey: [String: Track] = [:]
     private var localTracks: [Track] = []
-    /// Offline mode: when on, server tracks that aren't on the device are hidden, so
-    /// the whole library shows only what actually plays without a connection.
+    /// Manual offline override: force offline even while connected (e.g. to save data).
     @Published var offlineOnly: Bool = UserDefaults.standard.bool(forKey: "library.offlineOnly") {
         didSet {
             UserDefaults.standard.set(offlineOnly, forKey: "library.offlineOnly")
             rebuildMerged()
         }
+    }
+    /// Live network reachability, watched so the library reacts to losing/gaining a
+    /// connection on its own — not only when the user flips the switch.
+    @Published private(set) var isOnline: Bool = true {
+        didSet { if oldValue != isOnline { rebuildMerged() } }
+    }
+    /// The effective offline state: the manual override OR no connection. Everything
+    /// that hides streaming-only songs keys off this, so going offline — by choice or by
+    /// losing signal — hides every song that isn't on the device, everywhere.
+    var effectiveOffline: Bool { offlineOnly || !isOnline }
+
+    private let pathMonitor = NWPathMonitor()
+
+    init() {
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            let online = path.status == .satisfied
+            Task { @MainActor in self?.isOnline = online }
+        }
+        pathMonitor.start(queue: DispatchQueue(label: "glass.library.netmon"))
     }
 
     private let audioExtensions: Set<String> = [
@@ -99,6 +118,19 @@ final class LibraryStore: ObservableObject {
         if persist { saveRemoteCache(remote) }
     }
 
+    /// Merge newly-discovered server tracks into the catalog WITHOUT replacing it
+    /// (delta sync), deduping by id, then rebuild. Used when the server's song count
+    /// grew, so we fold in only what's new instead of walking the whole library.
+    func appendRemote(_ newTracks: [Track], persist: Bool = true) {
+        guard !newTracks.isEmpty else { return }
+        let known = Set(remoteTracks.map { $0.id })
+        let additions = newTracks.filter { !known.contains($0.id) }
+        guard !additions.isEmpty else { return }
+        remoteTracks.append(contentsOf: additions)
+        rebuildMerged()
+        if persist { saveRemoteCache(remoteTracks) }
+    }
+
     /// Apply fetched cover art to remote tracks (the post-sync background backfill).
     func applyRemoteArtwork(_ art: [String: Data]) {
         guard !art.isEmpty else { return }
@@ -121,8 +153,8 @@ final class LibraryStore: ObservableObject {
         let localKeys = Set(localTracks.map { $0.contentKey })
         var merged = localTracks
         for r in remoteTracks where !localKeys.contains(r.contentKey) {
-            // Offline mode hides server tracks that aren't downloaded/cached.
-            if offlineOnly && !FileManager.default.fileExists(atPath: r.url.path) { continue }
+            // Offline (by choice or no connection) hides server tracks not on the device.
+            if effectiveOffline && !FileManager.default.fileExists(atPath: r.url.path) { continue }
             merged.append(r)
         }
         merged.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }

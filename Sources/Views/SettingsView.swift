@@ -123,6 +123,10 @@ struct SettingsView: View {
                         Toggle(isOn: $library.offlineOnly) {
                             Label("Offline Mode", systemImage: "wifi.slash")
                         }
+                        if !library.isOnline {
+                            Text("No connection — showing only songs on this device.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                         Toggle(isOn: Binding(get: { sync.useMobileData },
                                              set: { sync.setUseMobileData($0) })) {
                             Label("Sync on Mobile Data", systemImage: "antenna.radiowaves.left.and.right")

@@ -44,9 +44,9 @@ struct MusicApp: App {
                     // playlist edits up; sync quietly again when brought to foreground.
                     if phase == .background {
                         player.persistNow()
-                        // Phone→server backup of playlists. Safe now: it only runs once
-                        // provisioned, and nothing pulls server state back over the phone.
-                        Task { await sync.pushPlaylists() }
+                        // Mirror playlist edits up — but only if they actually changed,
+                        // and never a catalog walk. Cheap, so backgrounding stays instant.
+                        sync.pushIfChanged()
                     } else if phase == .active {
                         Task { await sync.autoSyncIfAllowed() }
                     }
