@@ -21,6 +21,12 @@ struct TrackMeta: Codable, Hashable {
         func norm(_ s: String) -> String { s.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) }
         return "\(norm(artist))\u{1}\(norm(album))\u{1}\(norm(title))"
     }
+
+    /// Must match Track.looseKey: title + duration in whole seconds, for resolving an
+    /// entry to a local copy even when its artist/album tags were read differently.
+    var looseKey: String {
+        "\(title.lowercased().trimmingCharacters(in: .whitespacesAndNewlines))\u{1}\(Int(duration.rounded()))"
+    }
 }
 
 struct Playlist: Identifiable, Codable, Hashable {

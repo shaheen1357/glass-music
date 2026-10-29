@@ -426,6 +426,10 @@ final class PlaylistStore: ObservableObject {
         // any entry that hasn't got a content key yet.
         playlist.trackIDs.compactMap { id in
             if let key = playlist.trackKeys?[id], let t = library.trackByContentKey[key] { return t }
+            // Looser match (title + duration) when the content key missed because a tag
+            // was read differently on each source — still resolves to the local copy,
+            // since the merged index prefers it.
+            if let m = playlist.trackMeta?[id], let t = library.trackByLooseKey[m.looseKey] { return t }
             if let t = library.tracksByID[id] { return t }
             // Not resolvable to a real source. Online, keep the song visible as a
             // placeholder built from its stored metadata (pending upload / schema-only);

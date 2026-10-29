@@ -16,6 +16,9 @@ final class LibraryStore: ObservableObject {
     @Published private(set) var remoteTracks: [Track] = []
     // contentKey -> Track, for resolving a playlist entry to any available source.
     @Published private(set) var trackByContentKey: [String: Track] = [:]
+    // looseKey (title+duration) -> Track, the fallback index for resolving/deduping a
+    // song whose artist/album tags differ between the local file and the server.
+    @Published private(set) var trackByLooseKey: [String: Track] = [:]
     private var localTracks: [Track] = []
     /// Manual offline override: force offline even while connected (e.g. to save data).
     @Published var offlineOnly: Bool = UserDefaults.standard.bool(forKey: "library.offlineOnly") {
@@ -142,17 +145,23 @@ final class LibraryStore: ObservableObject {
         saveRemoteCache(remoteTracks)
     }
 
-    /// The server copy of a local song (same content), if the catalog has it.
+    /// The server copy of a local song, by exact content key, else the looser
+    /// title+duration match for when a tag was read differently on each side.
     func remoteTwin(of track: Track) -> Track? {
         remoteTracks.first { $0.contentKey == track.contentKey }
+            ?? remoteTracks.first { $0.looseKey == track.looseKey }
     }
 
-    /// Merge local + remote into `tracks`, preferring the local copy when a song
-    /// exists in both, then rebuild the derived collections and the content index.
+    /// Merge local + remote into `tracks`, preferring the local copy when a song exists
+    /// in both, then rebuild the derived collections and the lookup indexes. A server
+    /// track is dropped as a duplicate when a local one matches it by content key OR by
+    /// the looser title+duration key — so a twin whose artist/album tags disagree between
+    /// the two sources still collapses to one row instead of showing twice.
     private func rebuildMerged() {
         let localKeys = Set(localTracks.map { $0.contentKey })
+        let localLoose = Set(localTracks.map { $0.looseKey })
         var merged = localTracks
-        for r in remoteTracks where !localKeys.contains(r.contentKey) {
+        for r in remoteTracks where !localKeys.contains(r.contentKey) && !localLoose.contains(r.looseKey) {
             // Offline (by choice or no connection) hides server tracks not on the device.
             if effectiveOffline && !FileManager.default.fileExists(atPath: r.url.path) { continue }
             merged.append(r)
@@ -161,6 +170,7 @@ final class LibraryStore: ObservableObject {
         tracks = merged
         rebuildCollections()
         trackByContentKey = Dictionary(merged.map { ($0.contentKey, $0) }, uniquingKeysWith: { a, _ in a })
+        trackByLooseKey = Dictionary(merged.map { ($0.looseKey, $0) }, uniquingKeysWith: { a, _ in a })
     }
 
     private var remoteCacheURL: URL {

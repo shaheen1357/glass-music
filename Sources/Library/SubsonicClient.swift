@@ -367,6 +367,13 @@ extension Track {
         func norm(_ s: String) -> String { s.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) }
         return "\(norm(artist))\u{1}\(norm(album))\u{1}\(norm(title))"
     }
+
+    /// A looser identity for deduping across sources when even the artist or album tag
+    /// is read differently on each side: title plus duration in whole seconds, both of
+    /// which come from the audio itself and agree for the same file.
+    var looseKey: String {
+        "\(title.lowercased().trimmingCharacters(in: .whitespacesAndNewlines))\u{1}\(Int(duration.rounded()))"
+    }
 }
 
 enum SubsonicID {
