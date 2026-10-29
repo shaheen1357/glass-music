@@ -79,7 +79,7 @@ struct HomeView: View {
                 mixes = MixBuilder.mixes(tracks: library.tracks, stats: stats,
                                          liked: playlists.liked?.trackIDs ?? [])
             }
-            .refreshable { await library.scan() }
+            .refreshable { await library.scan(); await sync.syncNow() }
         }
     }
 

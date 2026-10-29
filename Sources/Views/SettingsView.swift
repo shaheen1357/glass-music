@@ -115,17 +115,27 @@ struct SettingsView: View {
                             Spacer()
                             Text(subsonic.username).foregroundStyle(.secondary)
                         }
+                        HStack {
+                            Label("Library", systemImage: "music.note.list")
+                            Spacer()
+                            Text(syncStatusText).foregroundStyle(.secondary)
+                        }
                         Toggle(isOn: $library.offlineOnly) {
                             Label("Offline Mode", systemImage: "wifi.slash")
                         }
-                        Button { Task { await sync.syncNow() } } label: {
-                            Label(syncLabel, systemImage: "arrow.triangle.2.circlepath")
+                        Toggle(isOn: Binding(get: { sync.useMobileData },
+                                             set: { sync.setUseMobileData($0) })) {
+                            Label("Sync on Mobile Data", systemImage: "antenna.radiowaves.left.and.right")
                         }
-                        .disabled(sync.state == .syncing)
                         HStack {
                             Label("Downloaded", systemImage: "arrow.down.circle")
                             Spacer()
                             Text(cacheSizeText).foregroundStyle(.secondary)
+                        }
+                        HStack {
+                            Label("Data Used", systemImage: "chart.bar")
+                            Spacer()
+                            Text(sync.dataUsedText).foregroundStyle(.secondary)
                         }
                         Button(role: .destructive) { sync.clearCache() } label: {
                             Label("Clear Downloaded Cache", systemImage: "trash")
@@ -141,7 +151,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Server (Streaming)")
                 } footer: {
-                    Text("Stream and download from your own Navidrome/Subsonic server. Playlists and Liked Songs sync up, so they come back after a reinstall.")
+                    Text("Your library and playlists sync automatically in the background — no button. Audio only moves when you play a track or tap download. On cellular, syncing waits unless Sync on Mobile Data is on.")
                 }
 
                 Section {
@@ -196,12 +206,12 @@ struct SettingsView: View {
         }
     }
 
-    private var syncLabel: String {
+    private var syncStatusText: String {
         if let p = sync.progressText { return p }
         switch sync.state {
         case .syncing: return "Syncing…"
         case .failed(let m): return "Sync failed — \(m)"
-        default: return "Sync Now"
+        case .done, .idle: return sync.lastSynced == nil ? "Waiting to sync" : "Up to date"
         }
     }
     private var cacheSizeText: String {

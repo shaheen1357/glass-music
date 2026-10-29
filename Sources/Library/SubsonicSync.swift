@@ -23,6 +23,12 @@ final class SubsonicSync {
     private(set) var pinnedIDs: Set<String> = []
     private let pinnedKey = "subsonic.pinned"
 
+    // Cellular / data controls.
+    private let net = NetworkMonitor()
+    var useMobileData = UserDefaults.standard.bool(forKey: "subsonic.useMobileData")
+    private(set) var dataUsedBytes = UserDefaults.standard.integer(forKey: "subsonic.dataUsed")
+    private let cacheCapBytes = 2 * 1024 * 1024 * 1024   // 2 GB auto-cache ceiling (pinned exempt)
+
     init(store: SubsonicStore, library: LibraryStore, playlists: PlaylistStore) {
         self.store = store
         self.library = library
@@ -31,6 +37,33 @@ final class SubsonicSync {
     }
 
     var isConfigured: Bool { store.isConfigured }
+
+    // MARK: - Automatic sync (no button — runs on launch/foreground)
+    /// Sync quietly, but only when it's sensible: configured, not in offline mode,
+    /// not on cellular unless allowed, and not already synced in the last few minutes.
+    func autoSyncIfAllowed() async {
+        guard store.isConfigured, !library.offlineOnly else { return }
+        if net.isCellular && !useMobileData { return }
+        if let last = lastSynced, Date().timeIntervalSince(last) < 300 { return }
+        await syncNow()
+    }
+
+    func setUseMobileData(_ on: Bool) {
+        useMobileData = on
+        UserDefaults.standard.set(on, forKey: "subsonic.useMobileData")
+    }
+
+    var dataUsedText: String {
+        ByteCountFormatter.string(fromByteCount: Int64(dataUsedBytes), countStyle: .file)
+    }
+    func resetDataUsed() {
+        dataUsedBytes = 0
+        UserDefaults.standard.set(0, forKey: "subsonic.dataUsed")
+    }
+    private func addDataUsed(_ bytes: Int) {
+        dataUsedBytes += bytes
+        UserDefaults.standard.set(dataUsedBytes, forKey: "subsonic.dataUsed")
+    }
 
     // MARK: - Pull (catalog + playlists + liked)
     func syncNow() async {
@@ -198,8 +231,38 @@ final class SubsonicSync {
         guard let client = store.client, let sid = SubsonicID.serverID(for: track) else {
             return SubsonicCache.isCached(track.url) ? track.url : nil
         }
+        let wasCached = SubsonicCache.isCached(track.url)
         let suffix = track.url.pathExtension.isEmpty ? "mp3" : track.url.pathExtension
-        return try? await SubsonicCache.ensureCached(id: sid, suffix: suffix, using: client)
+        guard let url = try? await SubsonicCache.ensureCached(id: sid, suffix: suffix, using: client) else { return nil }
+        if !wasCached {
+            addDataUsed((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+            trimCache()
+        }
+        return url
+    }
+
+    /// Keep the auto-cache under its ceiling by evicting the oldest non-pinned files.
+    /// Downloaded (pinned) tracks are never touched.
+    private func trimCache() {
+        let fm = FileManager.default
+        guard let items = try? fm.contentsOfDirectory(
+            at: SubsonicCache.dir,
+            includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey]) else { return }
+        var total = items.reduce(0) { $0 + Int(((try? $1.resourceValues(forKeys: [.fileSizeKey]))?.fileSize) ?? 0) }
+        guard total > cacheCapBytes else { return }
+        let pinned = Set(pinnedIDs.map { $0.replacingOccurrences(of: "/", with: "_") })
+        let evictable = items
+            .filter { !pinned.contains($0.deletingPathExtension().lastPathComponent) }
+            .sorted {
+                let a = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+                let b = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+                return a < b
+            }
+        for f in evictable where total > cacheCapBytes {
+            let size = Int(((try? f.resourceValues(forKeys: [.fileSizeKey]))?.fileSize) ?? 0)
+            try? fm.removeItem(at: f)
+            total -= size
+        }
     }
 
     func scrobble(_ track: Track) {

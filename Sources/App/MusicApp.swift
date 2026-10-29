@@ -35,16 +35,18 @@ struct MusicApp: App {
                     // Restore the last session (paused) once the library is loaded
                     // so track IDs resolve to real files.
                     player.restorePlaybackState(using: library)
-                    // Pull the server catalog + playlists in the background so local
-                    // playback is instant and the server folds in when it's ready.
-                    Task { await sync.syncNow() }
+                    // Pull the server catalog + playlists quietly in the background so
+                    // local playback is instant and the server folds in when ready.
+                    Task { await sync.autoSyncIfAllowed() }
                 }
                 .onChange(of: scenePhase) { _, phase in
-                    // Save when leaving the app so the position survives a later kill,
-                    // and push any playlist edits up to the server.
+                    // Save when leaving so the position survives a later kill, and push
+                    // playlist edits up; sync quietly again when brought to foreground.
                     if phase == .background {
                         player.persistNow()
                         Task { await sync.pushPlaylists() }
+                    } else if phase == .active {
+                        Task { await sync.autoSyncIfAllowed() }
                     }
                 }
                 .onOpenURL { url in
