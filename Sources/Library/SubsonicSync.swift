@@ -29,6 +29,15 @@ final class SubsonicSync {
     private(set) var dataUsedBytes = UserDefaults.standard.integer(forKey: "subsonic.dataUsed")
     private let cacheCapBytes = 2 * 1024 * 1024 * 1024   // 2 GB auto-cache ceiling (pinned exempt)
 
+    /// The phone is the source of truth. The server only writes back into the library
+    /// on a fresh install (restore), decided by THIS flag — never by a song count, so a
+    /// deliberately-emptied library is never restored over. Once set, the gate is shut
+    /// for this install and sync is strictly phone→server for library/playlist content.
+    var libraryProvisioned: Bool {
+        get { UserDefaults.standard.bool(forKey: "library.provisioned") }
+        set { UserDefaults.standard.set(newValue, forKey: "library.provisioned") }
+    }
+
     init(store: SubsonicStore, library: LibraryStore, playlists: PlaylistStore) {
         self.store = store
         self.library = library
@@ -65,15 +74,27 @@ final class SubsonicSync {
         UserDefaults.standard.set(dataUsedBytes, forKey: "subsonic.dataUsed")
     }
 
-    // MARK: - Pull (catalog + playlists + liked)
+    // MARK: - Sync (asymmetric: catalog pulls read-only; library is phone-authoritative)
     func syncNow() async {
         guard let client = store.client else { return }
         state = .syncing
         do {
+            // The catalog is a READ-ONLY mirror of what the server holds, for streaming
+            // and dedup. It never adds or removes anything in the phone's library.
             try await syncCatalog(client)
-            progressText = "Syncing playlists…"
-            try await syncPlaylists(client)
-            try await syncLiked(client)
+
+            if shouldRestore() {
+                // Fresh install, genuinely empty library: pull playlists + liked DOWN,
+                // once. This is the only server→library write path.
+                progressText = "Restoring playlists…"
+                try await syncPlaylists(client)
+                try await syncLiked(client)
+            } else {
+                // Provisioned: the phone is the truth. Push playlists UP; never pull
+                // library state down over it.
+                await pushPlaylists()
+            }
+            libraryProvisioned = true
             playlists.reconcileKeys(using: library)
             lastSynced = Date()
             state = .done
@@ -82,6 +103,12 @@ final class SubsonicSync {
             progressText = nil
             state = .failed((error as? SubsonicError)?.errorDescription ?? error.localizedDescription)
         }
+    }
+
+    /// Restore (server→library) is allowed only on a never-provisioned install whose
+    /// library is genuinely empty. After that the gate is shut for this install.
+    private func shouldRestore() -> Bool {
+        !libraryProvisioned && library.isLocalEmpty && playlists.userPlaylistsEmpty
     }
 
     private func syncCatalog(_ client: SubsonicClient) async throws {
@@ -159,9 +186,12 @@ final class SubsonicSync {
         playlists.mergeLikedFromServer(songs.map { SubsonicID.prefix + $0.id })
     }
 
-    // MARK: - Push local user playlists to the server (call on background / sign-out)
+    // MARK: - Push local user playlists to the server (phone is authoritative)
+    /// Mirrors the phone's playlists up as a lossy, server-only-subset copy (full
+    /// overwrite). Only runs once provisioned, so a restore-in-progress never pushes a
+    /// half-built library over the server.
     func pushPlaylists() async {
-        guard let client = store.client else { return }
+        guard let client = store.client, libraryProvisioned else { return }
         for pl in playlists.playlists where pl.kind == .user {
             let songIDs: [String] = pl.trackIDs.compactMap { id in
                 if id.hasPrefix(SubsonicID.prefix) { return String(id.dropFirst(SubsonicID.prefix.count)) }

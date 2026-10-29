@@ -85,6 +85,12 @@ final class PlaylistStore: ObservableObject {
         playlists.filter { $0.isPinned } + playlists.filter { !$0.isPinned }
     }
 
+    /// No user playlist holds any tracks — part of the "is this a fresh install?"
+    /// check that gates a server→library restore.
+    var userPlaylistsEmpty: Bool {
+        !playlists.contains { $0.kind == .user && !$0.trackIDs.isEmpty }
+    }
+
     func togglePin(_ playlist: Playlist) {
         guard let index = playlists.firstIndex(where: { $0.id == playlist.id }) else { return }
         if playlists[index].isPinned {

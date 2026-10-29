@@ -44,9 +44,9 @@ struct MusicApp: App {
                     // playlist edits up; sync quietly again when brought to foreground.
                     if phase == .background {
                         player.persistNow()
-                        // Auto-push disabled: when the app's view was incomplete it
-                        // was overwriting (shrinking) server playlists. Pull-only until
-                        // push is made non-destructive.
+                        // Phone→server backup of playlists. Safe now: it only runs once
+                        // provisioned, and nothing pulls server state back over the phone.
+                        Task { await sync.pushPlaylists() }
                     } else if phase == .active {
                         Task { await sync.autoSyncIfAllowed() }
                     }

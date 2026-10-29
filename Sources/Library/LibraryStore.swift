@@ -33,6 +33,10 @@ final class LibraryStore: ObservableObject {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     }
 
+    /// True when the phone holds no local music files — used by the restore gate so a
+    /// fresh install can pull from the server, but a provisioned phone never does.
+    var isLocalEmpty: Bool { localTracks.isEmpty }
+
     // MARK: - Scanning
     /// Incremental, cache-backed scan. On launch the cached library from the last
     /// session shows instantly; then only NEW files are parsed and deleted ones
@@ -77,6 +81,9 @@ final class LibraryStore: ObservableObject {
         if result.isEmpty { result = Self.demoTracks() }
         #endif
         localTracks = result
+        // A phone that holds local music is an owned library — mark it provisioned so
+        // the server can never restore (overwrite) it.
+        if !result.isEmpty { UserDefaults.standard.set(true, forKey: "library.provisioned") }
         if remoteTracks.isEmpty { remoteTracks = loadRemoteCache() ?? [] }
         rebuildMerged()
         saveCache(result)
@@ -462,6 +469,8 @@ final class LibraryStore: ObservableObject {
                 if let id = copyIntoLibrary(source) { importedIDs.append(id) }
             }
         }
+        // Importing means the user owns this library now — close the restore gate.
+        if !importedIDs.isEmpty { UserDefaults.standard.set(true, forKey: "library.provisioned") }
         Task { await scan() }
         return importedIDs
     }
