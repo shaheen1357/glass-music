@@ -115,8 +115,18 @@ final class PlaylistStore: ObservableObject {
             playlists[index].trackIDs.remove(at: existing)
         } else {
             playlists[index].trackIDs.insert(track.id, at: 0)
+            rememberKey(track, at: index)
         }
         save()
+    }
+
+    /// Record a track's content identity the moment it's added to a playlist, so the
+    /// entry survives the local file being deleted — it then resolves to the server
+    /// copy of the same song by content key.
+    private func rememberKey(_ track: Track, at index: Int) {
+        var keys = playlists[index].trackKeys ?? [:]
+        keys[track.id] = track.contentKey
+        playlists[index].trackKeys = keys
     }
 
     // MARK: - CRUD
@@ -198,6 +208,7 @@ final class PlaylistStore: ObservableObject {
         guard let index = playlists.firstIndex(where: { $0.id == playlistID }) else { return }
         if !playlists[index].trackIDs.contains(track.id) {
             playlists[index].trackIDs.append(track.id)
+            rememberKey(track, at: index)
             save()
         }
     }
