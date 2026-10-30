@@ -145,23 +145,39 @@ final class LibraryStore: ObservableObject {
         saveRemoteCache(remoteTracks)
     }
 
-    /// The server copy of a local song, by exact content key, else the looser
-    /// title+duration match for when a tag was read differently on each side.
-    func remoteTwin(of track: Track) -> Track? {
-        remoteTracks.first { $0.contentKey == track.contentKey }
-            ?? remoteTracks.first { $0.looseKey == track.looseKey }
-    }
+    /// The server copy of a local song — by file name, else exact content key, else the
+    /// looser title+duration match for when a tag was read differently on each side.
+    func remoteTwin(of track: Track) -> Track? { remoteIndex.twin(of: track) }
+
+    /// True if the server holds any song with this title (see RemoteIndex.hasTitle).
+    func serverHasTitle(_ title: String) -> Bool { remoteIndex.hasTitle(title) }
+
+    private var remoteIndex = RemoteIndex()
+    /// A local song's content key -> its server twin's, where the two differ (a
+    /// multi-artist tag reads "A" locally but "A • B" on Navidrome). Lets the playlist
+    /// merge compare both sides in one key space instead of seeing two songs.
+    private(set) var serverKeyByLocalKey: [String: String] = [:]
 
     /// Merge local + remote into `tracks`, preferring the local copy when a song exists
     /// in both, then rebuild the derived collections and the lookup indexes. A server
-    /// track is dropped as a duplicate when a local one matches it by content key OR by
-    /// the looser title+duration key — so a twin whose artist/album tags disagree between
-    /// the two sources still collapses to one row instead of showing twice.
+    /// track is dropped as a duplicate when it is a local song's twin (same file name),
+    /// or matches one by content key or the looser title+duration key — so a twin whose
+    /// artist/album tags disagree between the two sources still collapses to one row.
     private func rebuildMerged() {
+        remoteIndex = RemoteIndex(remoteTracks)
+        var twinIDs = Set<String>()
+        var keyMap: [String: String] = [:]
+        for t in localTracks {
+            guard let twin = remoteIndex.twin(of: t) else { continue }
+            twinIDs.insert(twin.id)
+            if twin.contentKey != t.contentKey { keyMap[t.contentKey] = twin.contentKey }
+        }
+        serverKeyByLocalKey = keyMap
         let localKeys = Set(localTracks.map { $0.contentKey })
         let localLoose = Set(localTracks.map { $0.looseKey })
         var merged = localTracks
-        for r in remoteTracks where !localKeys.contains(r.contentKey) && !localLoose.contains(r.looseKey) {
+        for r in remoteTracks where !twinIDs.contains(r.id)
+            && !localKeys.contains(r.contentKey) && !localLoose.contains(r.looseKey) {
             // Offline (by choice or no connection) hides server tracks not on the device.
             if effectiveOffline && !FileManager.default.fileExists(atPath: r.url.path) { continue }
             merged.append(r)

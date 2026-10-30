@@ -54,6 +54,13 @@ final class SubsonicSync {
         get { UserDefaults.standard.bool(forKey: "sync.playlistRepairDone") }
         set { UserDefaults.standard.set(newValue, forKey: "sync.playlistRepairDone") }
     }
+    /// Set after the first full catalog walk that records each server song's real path.
+    /// Older installs cached the catalog without paths, so they need one full walk to
+    /// match by file name; delta syncs only add new albums and would never backfill.
+    private var pathCatalogDone: Bool {
+        get { UserDefaults.standard.bool(forKey: "sync.pathCatalogDone") }
+        set { UserDefaults.standard.set(newValue, forKey: "sync.pathCatalogDone") }
+    }
     /// The server's media count at the last sync — the cheap "did anything change?" test.
     private var lastScanCount: Int {
         get { UserDefaults.standard.integer(forKey: "sync.lastScanCount") }
@@ -88,7 +95,7 @@ final class SubsonicSync {
     func autoSyncIfAllowed() async {
         guard let client = store.client, !library.effectiveOffline else { return }
         if net.isCellular && !useMobileData { return }
-        if shouldRestore() || !repairDone { await syncNow(); return }
+        if shouldRestore() || !repairDone || !pathCatalogDone { await syncNow(); return }
 
         if await serverSongCountChanged(client) {
             try? await syncCatalogDelta(client)
@@ -152,6 +159,7 @@ final class SubsonicSync {
             try await syncLiked(client)
 
             repairDone = true
+            pathCatalogDone = true
             libraryProvisioned = true
             lastPushedSignature = playlistSignature()
             lastSynced = Date()
@@ -339,17 +347,29 @@ final class SubsonicSync {
 
     // MARK: - Push local user playlists to the server (phone edits mirror up)
     /// Map a phone playlist's entries to server song ids — its own, or a local file's
-    /// server twin by content. A local-only song with no server copy is dropped from the
-    /// pushed copy (the server can't hold audio it doesn't have) but stays on the phone.
-    private func mapSongIDs(_ pl: Playlist) -> [String] {
-        pl.trackIDs.compactMap { id in
-            if id.hasPrefix(SubsonicID.prefix) { return String(id.dropFirst(SubsonicID.prefix.count)) }
-            if let t = library.tracksByID[id], let twin = library.remoteTwin(of: t) {
-                return SubsonicID.serverID(for: twin)
+    /// server twin. A local-only song with no server copy is dropped from the pushed
+    /// copy (the server can't hold audio it doesn't have) but stays on the phone.
+    /// `unmatched` counts the songs the server DOES seem to have (same title) yet no
+    /// twin was found for — a failed match, not a phone-only song.
+    private func mapSongIDs(_ pl: Playlist) -> (ids: [String], unmatched: [String]) {
+        var ids: [String] = []
+        var unmatched: [String] = []
+        for id in pl.trackIDs {
+            if id.hasPrefix(SubsonicID.prefix) { ids.append(String(id.dropFirst(SubsonicID.prefix.count))); continue }
+            guard let t = library.tracksByID[id] else { continue }
+            if let twin = library.remoteTwin(of: t), let sid = SubsonicID.serverID(for: twin) {
+                ids.append(sid)
+            } else if library.serverHasTitle(t.title) {
+                unmatched.append(t.title)
             }
-            return nil
         }
+        return (ids, unmatched)
     }
+
+    /// Playlists held back from the last push because some songs failed to match —
+    /// shown in Settings so a mismatch is visible instead of silently shrinking the
+    /// server's copy (setPlaylist replaces the whole list).
+    private(set) var pushWarning: String?
 
     /// Guards against two pushes running at once (background + foreground can each
     /// trigger one). Without it, both see a playlist with no server id yet and both
@@ -371,10 +391,15 @@ final class SubsonicSync {
         var idByName: [String: String] = [:]
         for s in serverLists { if let n = s.name { idByName[n] = s.id } }
 
+        var held: [String] = []
         for pl in playlists.playlists where pl.kind == .user {
-            let songIDs = mapSongIDs(pl)
+            let (songIDs, unmatched) = mapSongIDs(pl)
             guard !songIDs.isEmpty else { continue }
             let target = pl.serverID.flatMap { liveIDs.contains($0) ? $0 : nil } ?? idByName[pl.name]
+            if target != nil && !unmatched.isEmpty {
+                held.append("\(pl.name) (\(unmatched.count))")
+                continue
+            }
             do {
                 if let target {
                     try await client.setPlaylist(id: target, songIDs: songIDs)
@@ -385,6 +410,8 @@ final class SubsonicSync {
                 }
             } catch { /* best-effort per playlist */ }
         }
+        pushWarning = held.isEmpty ? nil
+            : "Not synced — songs didn't match the server: " + held.joined(separator: ", ")
         await pushLikedStars(client)
     }
 
@@ -397,7 +424,7 @@ final class SubsonicSync {
         for pl in playlists.playlists where pl.kind == .user {
             if let sid = pl.serverID, ids.contains(sid) { continue }
             if names.contains(pl.name) { continue }
-            let songIDs = mapSongIDs(pl)
+            let songIDs = mapSongIDs(pl).ids
             guard !songIDs.isEmpty else { continue }
             if let created = try? await client.createPlaylist(name: pl.name, songIDs: songIDs) {
                 playlists.setServerID(created.id, forID: pl.id)

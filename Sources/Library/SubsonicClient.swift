@@ -328,6 +328,9 @@ struct SubChild: Decodable, Identifiable, Hashable {
     let created: String?
     let albumId: String?
     let artistId: String?
+    // Navidrome sends the real path only when the player has "Report Real Path" on
+    // (absolute, e.g. "/music/aot/x.flac"); otherwise a fake relative one.
+    let path: String?
 }
 
 // MARK: - Mapping to the app's Track + song identity
@@ -349,7 +352,8 @@ extension SubsonicClient {
             duration: Double(c.duration ?? 0),
             artworkData: nil,
             dateAdded: SubsonicID.parseDate(c.created),
-            lyrics: nil
+            lyrics: nil,
+            sourcePath: c.path
         )
     }
 }
@@ -370,9 +374,54 @@ extension Track {
 
     /// A looser identity for deduping across sources when even the artist or album tag
     /// is read differently on each side: title plus duration in whole seconds, both of
-    /// which come from the audio itself and agree for the same file.
+    /// which come from the audio itself and agree for the same file. Truncated, not
+    /// rounded: Navidrome sends int32(duration), so 466.89s arrives as 466 — rounding
+    /// the local 466.89 to 467 missed every song whose fraction was .5 or more.
     var looseKey: String {
-        "\(title.lowercased().trimmingCharacters(in: .whitespacesAndNewlines))\u{1}\(Int(duration.rounded()))"
+        "\(title.lowercased().trimmingCharacters(in: .whitespacesAndNewlines))\u{1}\(Int(duration))"
+    }
+
+    /// The audio file's name — the one identity both sides spell the same, whatever the
+    /// tags say (Navidrome joins multiple artists as "A • B"; the local reader doesn't).
+    /// Local: the file's own name. Remote: only from a real (absolute) server path; the
+    /// fake relative path Navidrome reports by default says nothing about the file.
+    var fileNameKey: String? {
+        let name: String
+        if SubsonicID.isRemote(self) {
+            guard let p = sourcePath, p.hasPrefix("/") else { return nil }
+            name = (p as NSString).lastPathComponent
+        } else {
+            name = url.lastPathComponent
+        }
+        return name.precomposedStringWithCanonicalMapping.lowercased()
+    }
+}
+
+/// Finds the server copy of a local song: by file name first, then exact content key,
+/// then the looser title+duration key. Pure (no store), so it is unit-testable.
+struct RemoteIndex {
+    private var byFileName: [String: Track] = [:]
+    private var byContentKey: [String: Track] = [:]
+    private var byLooseKey: [String: Track] = [:]
+
+    init(_ remote: [Track] = []) {
+        for r in remote {
+            if let n = r.fileNameKey, byFileName[n] == nil { byFileName[n] = r }
+            if byContentKey[r.contentKey] == nil { byContentKey[r.contentKey] = r }
+            if byLooseKey[r.looseKey] == nil { byLooseKey[r.looseKey] = r }
+        }
+    }
+
+    func twin(of track: Track) -> Track? {
+        if let n = track.fileNameKey, let r = byFileName[n] { return r }
+        return byContentKey[track.contentKey] ?? byLooseKey[track.looseKey]
+    }
+
+    /// True if the server has any song with this title — used to tell a song that
+    /// failed to match apart from one that is genuinely phone-only.
+    func hasTitle(_ title: String) -> Bool {
+        let t = title.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        return byLooseKey.keys.contains { $0.hasPrefix(t + "\u{1}") }
     }
 }
 

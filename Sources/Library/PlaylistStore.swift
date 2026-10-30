@@ -358,12 +358,16 @@ final class PlaylistStore: ObservableObject {
 
     private func mergeOne(at i: Int, server s: ServerPlaylist, using library: LibraryStore) {
         let p = playlists[i]
+        // Compare in the server's key space: a local song whose tags read differently
+        // from its server twin's would otherwise look like two songs — duplicated in
+        // the merge, or "removed" against a baseline stored under the other key.
+        func canon(_ k: String) -> String { library.serverKeyByLocalKey[k] ?? k }
         var phoneKeyByID: [String: String] = [:]
-        for id in p.trackIDs { if let k = keyFor(id, in: p, library: library) { phoneKeyByID[id] = k } }
+        for id in p.trackIDs { if let k = keyFor(id, in: p, library: library) { phoneKeyByID[id] = canon(k) } }
         let phoneKeys = Set(phoneKeyByID.values)
         let serverEntryByKey = Dictionary(s.entries.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
         let serverKeys = Set(s.entries.map { $0.key })
-        let base = Set(p.syncBaseline ?? [])
+        let base = Set((p.syncBaseline ?? []).map(canon))
 
         // A song stays unless it was in the baseline and one side genuinely removed it.
         let removed = base.subtracting(phoneKeys).union(base.subtracting(serverKeys))

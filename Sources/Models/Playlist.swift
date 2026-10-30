@@ -25,7 +25,7 @@ struct TrackMeta: Codable, Hashable {
     /// Must match Track.looseKey: title + duration in whole seconds, for resolving an
     /// entry to a local copy even when its artist/album tags were read differently.
     var looseKey: String {
-        "\(title.lowercased().trimmingCharacters(in: .whitespacesAndNewlines))\u{1}\(Int(duration.rounded()))"
+        "\(title.lowercased().trimmingCharacters(in: .whitespacesAndNewlines))\u{1}\(Int(duration))"
     }
 }
 

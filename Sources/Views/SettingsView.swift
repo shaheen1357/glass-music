@@ -212,6 +212,7 @@ struct SettingsView: View {
 
     private var syncStatusText: String {
         if let p = sync.progressText { return p }
+        if let w = sync.pushWarning { return w }
         switch sync.state {
         case .syncing: return "Syncing…"
         case .failed(let m): return "Sync failed — \(m)"

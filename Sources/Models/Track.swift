@@ -14,6 +14,7 @@ struct Track: Identifiable, Hashable, Codable, Sendable {
     var artworkData: Data?
     var dateAdded: Date
     var lyrics: String? = nil
+    var sourcePath: String? = nil    // server's real file path (remote tracks only)
 
     var artwork: UIImage? {
         guard let artworkData else { return nil }
@@ -26,7 +27,7 @@ struct Track: Identifiable, Hashable, Codable, Sendable {
 
 extension Track {
     enum CodingKeys: String, CodingKey {
-        case id, url, title, artist, album, albumArtist, trackNumber, discNumber, duration, artworkData, dateAdded, lyrics
+        case id, url, title, artist, album, albumArtist, trackNumber, discNumber, duration, artworkData, dateAdded, lyrics, sourcePath
     }
     // Tolerant decode: fields added in later versions default when absent, so an
     // older library-cache.json still loads instead of forcing a full rescan.
@@ -45,6 +46,7 @@ extension Track {
         artworkData = try c.decodeIfPresent(Data.self, forKey: .artworkData)
         dateAdded = try c.decodeIfPresent(Date.self, forKey: .dateAdded) ?? .distantPast
         lyrics = try c.decodeIfPresent(String.self, forKey: .lyrics)
+        sourcePath = try c.decodeIfPresent(String.self, forKey: .sourcePath)
     }
 }
 
