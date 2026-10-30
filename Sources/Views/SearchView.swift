@@ -39,6 +39,7 @@ struct SearchView: View {
         .init(title: "Songs", icon: "music.note", colors: [Color(red: 0.20, green: 0.70, blue: 0.45), Color(red: 0.10, green: 0.50, blue: 0.50)]),
         .init(title: "Recently Added", icon: "clock", colors: [Color(red: 0.35, green: 0.30, blue: 0.80), Color(red: 0.20, green: 0.30, blue: 0.60)]),
         .init(title: "Folders", icon: "folder", colors: [Color(red: 0.60, green: 0.42, blue: 0.22), Color(red: 0.82, green: 0.52, blue: 0.22)]),
+        .init(title: "Downloads", icon: "arrow.down.circle.fill", colors: [Color(red: 0.12, green: 0.70, blue: 0.35), Color(red: 0.05, green: 0.45, blue: 0.30)]),
     ]
 
     var body: some View {
@@ -184,6 +185,7 @@ struct SearchView: View {
         case "Recently Added":
             SongsView(title: "Recently Added", tracks: library.tracks.sorted { $0.dateAdded > $1.dateAdded })
         case "Folders": FolderBrowseView(directory: library.documentsURL, title: "Folders")
+        case "Downloads": DownloadsView()
         default: EmptyView()
         }
     }

@@ -12,6 +12,7 @@ struct SettingsView: View {
     @Environment(SubsonicStore.self) private var subsonic
     @Environment(\.dismiss) private var dismiss
     @State private var showImport = false
+    @State private var confirmRemoveDownloads = false
     @State private var showServer = false
     @State private var exportItem: ExportItem?
     @State private var showRestore = false
@@ -131,18 +132,44 @@ struct SettingsView: View {
                                              set: { sync.setUseMobileData($0) })) {
                             Label("Sync on Mobile Data", systemImage: "antenna.radiowaves.left.and.right")
                         }
+                        NavigationLink {
+                            DownloadsView()
+                        } label: {
+                            HStack {
+                                Label("Downloads", systemImage: "arrow.down.circle.fill")
+                                Spacer()
+                                Text(sizeText(sync.storageSizes.downloads)).foregroundStyle(.secondary)
+                            }
+                        }
+                        Toggle(isOn: Binding(get: { sync.downloadOnMobileData },
+                                             set: { sync.setDownloadOnMobileData($0) })) {
+                            Label("Download on Mobile Data", systemImage: "arrow.down.circle")
+                        }
                         HStack {
-                            Label("Downloaded", systemImage: "arrow.down.circle")
+                            Label("Play Cache", systemImage: "internaldrive")
                             Spacer()
-                            Text(cacheSizeText).foregroundStyle(.secondary)
+                            Text("\(sizeText(sync.storageSizes.cache)) of 2 GB").foregroundStyle(.secondary)
                         }
                         HStack {
                             Label("Data Used", systemImage: "chart.bar")
                             Spacer()
                             Text(sync.dataUsedText).foregroundStyle(.secondary)
                         }
+                        // Two separate buttons for two separate things. The play cache
+                        // is songs kept from playing; downloads are what you chose to keep.
                         Button(role: .destructive) { sync.clearCache() } label: {
-                            Label("Clear Downloaded Cache", systemImage: "trash")
+                            Label("Clear Play Cache", systemImage: "trash")
+                        }
+                        Button(role: .destructive) { confirmRemoveDownloads = true } label: {
+                            Label("Remove All Downloads", systemImage: "arrow.down.circle.dotted")
+                        }
+                        .disabled(sync.storageSizes.downloads == 0 && sync.downloadsSnapshot().downloading.isEmpty)
+                        .confirmationDialog("Remove all downloads?", isPresented: $confirmRemoveDownloads,
+                                            titleVisibility: .visible) {
+                            Button("Remove All Downloads", role: .destructive) { sync.removeAllDownloads() }
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            Text("Downloaded playlists and albums stop downloading. Songs stay on the server and still stream.")
                         }
                         Button(role: .destructive) { subsonic.signOut() } label: {
                             Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
@@ -155,7 +182,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Server (Streaming)")
                 } footer: {
-                    Text("Your library and playlists sync automatically in the background — no button. Audio only moves when you play a track or tap download. On cellular, syncing waits unless Sync on Mobile Data is on.")
+                    Text("Your library and playlists sync automatically in the background — no button. Audio only moves when you play a track or tap download. On cellular, syncing waits unless Sync on Mobile Data is on, and downloads wait for Wi-Fi unless Download on Mobile Data is on. Downloads carry on when you leave the app.")
                 }
 
                 Section {
@@ -219,8 +246,8 @@ struct SettingsView: View {
         case .done, .idle: return sync.lastSynced == nil ? "Waiting to sync" : "Up to date"
         }
     }
-    private var cacheSizeText: String {
-        ByteCountFormatter.string(fromByteCount: sync.cacheSize, countStyle: .file)
+    private func sizeText(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 }
 

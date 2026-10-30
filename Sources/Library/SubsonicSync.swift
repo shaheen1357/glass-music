@@ -9,7 +9,7 @@ import Observation
 @Observable
 final class SubsonicSync {
     enum State: Equatable { case idle, syncing, done, failed(String) }
-    enum Availability { case local, downloaded, cached, streams }
+    enum Availability { case local, downloaded, downloading, waiting, failed, cached, streams }
 
     let store: SubsonicStore
     private unowned let library: LibraryStore
@@ -19,8 +19,32 @@ final class SubsonicSync {
     private(set) var lastSynced: Date?
     private(set) var progressText: String?        // live "Syncing… N songs" for the UI
 
-    // Explicitly downloaded (pinned) remote server-ids — never evicted.
+    /// Every server id that should be on the phone: manualIDs plus the songs of every
+    /// downloaded playlist or album. Recomputed by reconcileDownloads().
     private(set) var pinnedIDs: Set<String> = []
+    /// Songs downloaded one by one from their ••• menu.
+    private(set) var manualIDs: Set<String> = []
+    /// Downloaded playlists and albums ("playlist:<id>", "album:<id>").
+    private(set) var downloadRules: Set<String> = []
+    /// Queued in the background session (running, or waiting for Wi-Fi).
+    private(set) var queuedIDs: Set<String> = []
+    /// Downloads that failed; shown with a retry, never retried silently.
+    private(set) var failedIDs: Set<String> = []
+    /// Songs you chose to fetch over mobile data despite the Wi-Fi-only default.
+    private var cellularAllowedIDs: Set<String> = []
+    private(set) var downloadOnMobileData = UserDefaults.standard.bool(forKey: "downloads.onMobileData")
+    /// Server ids being fetched right now (download button or playback).
+    private(set) var fetchingIDs: Set<String> = []
+    /// How far each of those fetches has got, 0...1, for the download rings.
+    private(set) var fetchProgress: [String: Double] = [:]
+    /// Bumped whenever a file lands in or leaves the stream cache. The cache is files
+    /// on disk, which SwiftUI can't observe; reading this in availability() makes a
+    /// row's badge redraw the moment its download finishes.
+    private(set) var cacheVersion = 0
+    /// One fetch per song: a second request for the same id (playback starting while
+    /// the Download button fetches it, or the next-track prefetch) awaits the first
+    /// instead of downloading over the file the player may already have open.
+    @ObservationIgnored private var inflight: [String: Task<URL?, Never>] = [:]
     private let pinnedKey = "subsonic.pinned"
 
     // Cellular / data controls.
@@ -42,7 +66,13 @@ final class SubsonicSync {
         self.store = store
         self.library = library
         self.playlists = playlists
-        pinnedIDs = Set(UserDefaults.standard.stringArray(forKey: pinnedKey) ?? [])
+        let d = UserDefaults.standard
+        manualIDs = Set(d.stringArray(forKey: pinnedKey) ?? [])
+        downloadRules = Set(d.stringArray(forKey: "downloads.rules") ?? [])
+        failedIDs = Set(d.stringArray(forKey: "downloads.failed") ?? [])
+        cellularAllowedIDs = Set(d.stringArray(forKey: "downloads.cellularAllowed") ?? [])
+        pinnedIDs = manualIDs
+        restoreDownloads()
     }
 
     var isConfigured: Bool { store.isConfigured }
@@ -131,6 +161,7 @@ final class SubsonicSync {
             try? await reconcilePlaylists(client, mode: .additive)
         }
         lastSynced = Date()
+        reconcileDownloads()                    // downloaded playlists follow their edits
     }
 
     /// The server's media count if it differs from last sync, else nil. One cheap
@@ -193,6 +224,7 @@ final class SubsonicSync {
 
             repairDone = true
             libraryProvisioned = true
+            reconcileDownloads()
             lastPushedSignature = playlistSignature()
             lastSynced = Date()
             state = .done
@@ -489,43 +521,303 @@ final class SubsonicSync {
     }
 
     // MARK: - Offline availability / downloads
+    //
+    // What should be on the phone = songs downloaded one by one (manualIDs) plus every
+    // server song in a downloaded playlist or album (downloadRules), recomputed by
+    // reconcileDownloads() after each sync and each change. So a downloaded playlist
+    // stays downloaded: songs added later download, songs removed are deleted unless
+    // another download still wants them. What IS on the phone is read from disk.
+
     func availability(_ track: Track) -> Availability {
         if !SubsonicID.isRemote(track) { return .local }
-        let cached = SubsonicCache.isCached(track.url)
-        if let sid = SubsonicID.serverID(for: track), pinnedIDs.contains(sid) {
-            return cached ? .downloaded : .streams
+        _ = cacheVersion
+        guard let sid = SubsonicID.serverID(for: track) else { return .streams }
+        if SubsonicCache.isDownloaded(track.url) { return .downloaded }
+        if pinnedIDs.contains(sid) {
+            if failedIDs.contains(sid) { return .failed }
+            if queuedIDs.contains(sid) { return isWaitingForWiFi(sid) ? .waiting : .downloading }
         }
-        return cached ? .cached : .streams
+        return SubsonicCache.isCached(track.url) ? .cached : .streams
     }
 
-    func isOnDevice(_ track: Track) -> Bool {
-        SubsonicID.isRemote(track) ? SubsonicCache.isCached(track.url)
-                                   : FileManager.default.fileExists(atPath: track.url.path)
+    /// Fraction downloaded so far for a song being downloaded for offline, else nil.
+    func downloadProgress(_ track: Track) -> Double? {
+        guard let sid = SubsonicID.serverID(for: track), queuedIDs.contains(sid) else { return nil }
+        return fetchProgress[sid] ?? 0
     }
 
-    @discardableResult
-    func download(_ track: Track) async -> Bool {
-        guard SubsonicID.isRemote(track), let sid = SubsonicID.serverID(for: track) else { return false }
-        pinnedIDs.insert(sid); savePinned()
-        _ = await ensureLocal(track)
-        return SubsonicCache.isCached(track.url)
+    var isOnCellular: Bool { net.isCellular }
+
+    private func isWaitingForWiFi(_ sid: String) -> Bool {
+        net.isCellular && !downloadOnMobileData && !cellularAllowedIDs.contains(sid)
     }
 
-    func download(_ tracks: [Track]) async {
-        for t in tracks { _ = await download(t) }
+    // Single songs (a song's ••• menu)
+    func isManuallyDownloaded(_ track: Track) -> Bool {
+        guard let sid = SubsonicID.serverID(for: track) else { return false }
+        return manualIDs.contains(sid)
+    }
+
+    /// True when a downloaded playlist or album keeps this song on the phone.
+    func isHeldByCollection(_ track: Track) -> Bool {
+        guard let sid = SubsonicID.serverID(for: track) else { return false }
+        return downloadRules.contains { serverIDs(forRule: $0).contains(sid) }
+    }
+
+    func download(_ track: Track, allowCellular: Bool = false) {
+        guard SubsonicID.isRemote(track), let sid = SubsonicID.serverID(for: track) else { return }
+        manualIDs.insert(sid)
+        if allowCellular { cellularAllowedIDs.insert(sid) }
+        saveDownloadState()
+        reconcileDownloads()
     }
 
     func removeDownload(_ track: Track) {
-        if let sid = SubsonicID.serverID(for: track) { pinnedIDs.remove(sid); savePinned() }
-        try? FileManager.default.removeItem(at: track.url)
+        guard let sid = SubsonicID.serverID(for: track) else { return }
+        manualIDs.remove(sid)
+        saveDownloadState()
+        reconcileDownloads()
     }
 
-    private func savePinned() {
-        UserDefaults.standard.set(Array(pinnedIDs), forKey: pinnedKey)
+    // Playlists and albums: "playlist:<id>", "album:<id>"
+    static func ruleKey(playlistID: String) -> String { "playlist:\(playlistID)" }
+    static func ruleKey(albumID: String) -> String { "album:\(albumID)" }
+
+    func isDownloadRule(_ key: String) -> Bool { downloadRules.contains(key) }
+
+    func setDownloadRule(_ key: String, on: Bool, allowCellular: Bool = false) {
+        if on {
+            downloadRules.insert(key)
+            if allowCellular { cellularAllowedIDs.formUnion(serverIDs(forRule: key)) }
+        } else {
+            downloadRules.remove(key)
+        }
+        saveDownloadState()
+        reconcileDownloads()
     }
 
-    var cacheSize: Int64 { SubsonicCache.sizeOnDisk() }
-    func clearCache() { SubsonicCache.clear() }
+    /// Where a playlist's or album's songs stand, for its download button.
+    struct CollectionStatus {
+        var total = 0, done = 0, waiting = 0, failed = 0
+        var partial = 0.0
+        var fraction: Double { total == 0 ? 0 : (Double(done) + partial) / Double(total) }
+        var complete: Bool { done == total }
+    }
+
+    func status(of tracks: [Track]) -> CollectionStatus {
+        var s = CollectionStatus()
+        for t in tracks where SubsonicID.isRemote(t) {
+            s.total += 1
+            switch availability(t) {
+            case .downloaded: s.done += 1
+            case .waiting: s.waiting += 1
+            case .failed: s.failed += 1
+            case .downloading: s.partial += downloadProgress(t) ?? 0
+            default: break
+            }
+        }
+        return s
+    }
+
+    // Downloads screen
+    struct DownloadsSnapshot {
+        var downloading: [Track] = [], waiting: [Track] = [], failed: [Track] = [], done: [Track] = []
+    }
+
+    func downloadsSnapshot() -> DownloadsSnapshot {
+        _ = cacheVersion
+        var s = DownloadsSnapshot()
+        let byID = remoteTracksByID()
+        for sid in pinnedIDs.sorted() {
+            guard let t = byID[sid] else { continue }
+            switch availability(t) {
+            case .downloaded: s.done.append(t)
+            case .waiting: s.waiting.append(t)
+            case .failed: s.failed.append(t)
+            case .downloading: s.downloading.append(t)
+            default: break
+            }
+        }
+        s.done.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        return s
+    }
+
+    func retryFailed() {
+        failedIDs.removeAll()
+        reconcileDownloads()
+    }
+
+    /// The one-tap override: queued downloads go now, over mobile data.
+    func downloadWaitingOnMobileData() {
+        let waiting = queuedIDs.filter(isWaitingForWiFi)
+        guard !waiting.isEmpty else { return }
+        cellularAllowedIDs.formUnion(waiting)
+        BackgroundDownloads.shared.cancel(ids: waiting)       // re-queued below, allowed
+        queuedIDs.subtract(waiting)
+        saveDownloadState()
+        reconcileDownloads(requeue: waiting)
+    }
+
+    func removeAllDownloads() {
+        manualIDs.removeAll()
+        downloadRules.removeAll()
+        cellularAllowedIDs.removeAll()
+        failedIDs.removeAll()
+        BackgroundDownloads.shared.cancelAll()
+        queuedIDs.removeAll()
+        // Delete outright rather than leave it to reconcile, which holds deletion back
+        // until the catalog has loaded: "Remove All" means now, whatever state we're in.
+        let fm = FileManager.default
+        if let files = try? fm.contentsOfDirectory(at: SubsonicCache.downloadsDir, includingPropertiesForKeys: nil) {
+            for f in files { SubsonicCache.removeDownload(SubsonicCache.dir.appendingPathComponent(f.lastPathComponent)) }
+        }
+        saveDownloadState()
+        reconcileDownloads()
+    }
+
+    func setDownloadOnMobileData(_ on: Bool) {
+        downloadOnMobileData = on
+        UserDefaults.standard.set(on, forKey: "downloads.onMobileData")
+        if on { downloadWaitingOnMobileData() }
+    }
+
+    /// Bring the phone in line with what should be downloaded: queue what's missing,
+    /// delete what nothing wants any more. Deletion only runs once the catalog is
+    /// loaded, so a half-started app can never wipe your downloads.
+    func reconcileDownloads(requeue: Set<String> = []) {
+        downloadRules = downloadRules.filter(ruleTargetExists)
+        var desired = manualIDs
+        for rule in downloadRules { desired.formUnion(serverIDs(forRule: rule)) }
+        pinnedIDs = desired
+        failedIDs.formIntersection(desired)
+        cellularAllowedIDs.formIntersection(desired)
+
+        let fm = FileManager.default
+        let desiredStems = Set(desired.map(SubsonicCache.stem))
+        if !library.remoteTracks.isEmpty,
+           let files = try? fm.contentsOfDirectory(at: SubsonicCache.downloadsDir, includingPropertiesForKeys: nil) {
+            for f in files where !desiredStems.contains(f.deletingPathExtension().lastPathComponent) {
+                SubsonicCache.removeDownload(SubsonicCache.dir.appendingPathComponent(f.lastPathComponent))
+            }
+        }
+        let gone = queuedIDs.subtracting(desired)
+        if !gone.isEmpty { BackgroundDownloads.shared.cancel(ids: gone); queuedIDs.subtract(gone) }
+
+        if let client = store.client {
+            let byID = remoteTracksByID()
+            for sid in desired where !queuedIDs.contains(sid) && !failedIDs.contains(sid) {
+                guard let t = byID[sid], !SubsonicCache.isDownloaded(t.url),
+                      let url = client.downloadURL(id: sid) else { continue }
+                BackgroundDownloads.shared.enqueue(
+                    id: sid, fileName: t.url.lastPathComponent, url: url,
+                    allowCellular: downloadOnMobileData || cellularAllowedIDs.contains(sid) || requeue.contains(sid))
+                queuedIDs.insert(sid)
+            }
+        }
+        saveDownloadState()
+        cacheVersion &+= 1
+    }
+
+    private func ruleTargetExists(_ rule: String) -> Bool {
+        if rule.hasPrefix("playlist:") {
+            let id = String(rule.dropFirst("playlist:".count))
+            return playlists.playlists.contains { $0.id == id }
+        }
+        if rule.hasPrefix("album:") {
+            // Albums are rebuilt from the catalog; keep the rule until it has loaded.
+            let id = String(rule.dropFirst("album:".count))
+            return library.albums.isEmpty || library.albums.contains { $0.id == id }
+        }
+        return false
+    }
+
+    private func serverIDs(forRule rule: String) -> Set<String> {
+        var tracks: [Track] = []
+        if rule.hasPrefix("playlist:") {
+            let id = String(rule.dropFirst("playlist:".count))
+            if let p = playlists.playlists.first(where: { $0.id == id }) {
+                tracks = playlists.tracks(for: p, in: library)
+            }
+        } else if rule.hasPrefix("album:") {
+            let id = String(rule.dropFirst("album:".count))
+            tracks = library.albums.first { $0.id == id }?.tracks ?? []
+        }
+        // A song the phone holds as its own file resolves to that file: nothing to fetch.
+        return Set(tracks.compactMap { SubsonicID.isRemote($0) ? SubsonicID.serverID(for: $0) : nil })
+    }
+
+    private func remoteTracksByID() -> [String: Track] {
+        Dictionary(library.remoteTracks.compactMap { t in SubsonicID.serverID(for: t).map { ($0, t) } },
+                   uniquingKeysWith: { a, _ in a })
+    }
+
+    private func downloadFinished(_ sid: String, landed: Bool, cancelled: Bool, bytes: Int64) {
+        // A cancel is always ours (removed, or re-queued to go over mobile data), and
+        // the bookkeeping was done when we cancelled. Acting on it here could clear a
+        // song re-queued a moment ago.
+        guard !cancelled else { return }
+        queuedIDs.remove(sid)
+        fetchProgress[sid] = nil
+        if landed {
+            failedIDs.remove(sid)
+            addDataUsed(Int(bytes))
+        } else if !cancelled && pinnedIDs.contains(sid) {
+            failedIDs.insert(sid)
+        }
+        saveDownloadState()
+        cacheVersion &+= 1
+    }
+
+    /// Startup: hook up the background session, carry earlier builds' downloads over,
+    /// and restore links iOS may have cleared along with the stream cache.
+    private func restoreDownloads() {
+        let bg = BackgroundDownloads.shared
+        bg.onProgress = { [weak self] sid, f in
+            guard let self, self.queuedIDs.contains(sid) else { return }
+            self.fetchProgress[sid] = f
+        }
+        bg.onFinished = { [weak self] sid, landed, cancelled, bytes in
+            self?.downloadFinished(sid, landed: landed, cancelled: cancelled, bytes: bytes)
+        }
+        bg.start()
+
+        let fm = FileManager.default
+        // Earlier builds kept downloads as plain files in the stream cache.
+        let legacy = Set(manualIDs.map(SubsonicCache.stem))
+        if let items = try? fm.contentsOfDirectory(at: SubsonicCache.dir, includingPropertiesForKeys: nil) {
+            for u in items where !SubsonicCache.isLink(u) && legacy.contains(u.deletingPathExtension().lastPathComponent) {
+                let dest = SubsonicCache.downloadedFile(for: u)
+                if !fm.fileExists(atPath: dest.path) { try? fm.moveItem(at: u, to: dest) }
+                SubsonicCache.link(u)
+            }
+        }
+        if let files = try? fm.contentsOfDirectory(at: SubsonicCache.downloadsDir, includingPropertiesForKeys: nil) {
+            for f in files { SubsonicCache.link(SubsonicCache.dir.appendingPathComponent(f.lastPathComponent)) }
+        }
+        Task { @MainActor [weak self] in
+            let active = await bg.activeIDs()
+            self?.queuedIDs.formUnion(active)
+            self?.cacheVersion &+= 1
+        }
+    }
+
+    private func saveDownloadState() {
+        let d = UserDefaults.standard
+        d.set(Array(manualIDs), forKey: pinnedKey)
+        d.set(Array(downloadRules), forKey: "downloads.rules")
+        d.set(Array(failedIDs), forKey: "downloads.failed")
+        d.set(Array(cellularAllowedIDs), forKey: "downloads.cellularAllowed")
+    }
+
+    /// What's on the phone from the server, split the way it's managed: downloads you
+    /// chose (kept until removed) and the play cache (kept under 2 GB on its own).
+    var storageSizes: (downloads: Int64, cache: Int64) {
+        _ = cacheVersion
+        return SubsonicCache.sizes()
+    }
+
+    /// Clears the play cache only. Downloads stay.
+    func clearCache() { SubsonicCache.clear(); cacheVersion &+= 1 }
 
     // MARK: - Playback seam + scrobble
     /// Resolve a track to a local file the engine can open — returns instantly for
@@ -537,28 +829,45 @@ final class SubsonicSync {
         guard let client = store.client, let sid = SubsonicID.serverID(for: track) else {
             return SubsonicCache.isCached(track.url) ? track.url : nil
         }
-        let wasCached = SubsonicCache.isCached(track.url)
+        if SubsonicCache.isDownloaded(track.url) { SubsonicCache.link(track.url); return track.url }
+        if SubsonicCache.isCached(track.url) { return track.url }
+        if let running = inflight[sid] { return await running.value }
         let suffix = track.url.pathExtension.isEmpty ? "mp3" : track.url.pathExtension
-        guard let url = try? await SubsonicCache.ensureCached(id: sid, suffix: suffix, using: client) else { return nil }
-        if !wasCached {
+        fetchingIDs.insert(sid)
+        fetchProgress[sid] = 0
+        let task = Task<URL?, Never> {
+            try? await SubsonicCache.ensureCached(id: sid, suffix: suffix, using: client) { [weak self] f in
+                Task { @MainActor in
+                    guard let self, self.fetchingIDs.contains(sid) else { return }
+                    self.fetchProgress[sid] = f
+                }
+            }
+        }
+        inflight[sid] = task
+        let url = await task.value
+        inflight[sid] = nil
+        fetchingIDs.remove(sid)
+        fetchProgress[sid] = nil
+        if let url {
             addDataUsed((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
             trimCache()
         }
+        cacheVersion &+= 1
         return url
     }
 
-    /// Keep the auto-cache under its ceiling by evicting the oldest non-pinned files.
-    /// Downloaded (pinned) tracks are never touched.
+    /// Keep the play cache under its 2 GB ceiling by evicting its oldest files.
+    /// Downloads neither count toward the ceiling nor get evicted: they used to be
+    /// counted, so once downloads passed 2 GB every cached song was thrown out.
     private func trimCache() {
         let fm = FileManager.default
         guard let items = try? fm.contentsOfDirectory(
             at: SubsonicCache.dir,
             includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey]) else { return }
-        var total = items.reduce(0) { $0 + Int(((try? $1.resourceValues(forKeys: [.fileSizeKey]))?.fileSize) ?? 0) }
+        let cached = items.filter { !SubsonicCache.isLink($0) }    // links point at downloads
+        var total = cached.reduce(0) { $0 + Int(((try? $1.resourceValues(forKeys: [.fileSizeKey]))?.fileSize) ?? 0) }
         guard total > cacheCapBytes else { return }
-        let pinned = Set(pinnedIDs.map { $0.replacingOccurrences(of: "/", with: "_") })
-        let evictable = items
-            .filter { !pinned.contains($0.deletingPathExtension().lastPathComponent) }
+        let evictable = cached
             .sorted {
                 let a = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
                 let b = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
@@ -569,6 +878,7 @@ final class SubsonicSync {
             try? fm.removeItem(at: f)
             total -= size
         }
+        cacheVersion &+= 1
     }
 
     func scrobble(_ track: Track) {

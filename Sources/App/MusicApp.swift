@@ -2,6 +2,8 @@ import SwiftUI
 
 @main
 struct MusicApp: App {
+    // Lets iOS wake the app to hand over downloads that finished in the background.
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     // Owned by AppServices so App Intents (Siri/Shortcuts) drive the same instances.
     @State private var player = AppServices.shared.player
     @StateObject private var library = AppServices.shared.library

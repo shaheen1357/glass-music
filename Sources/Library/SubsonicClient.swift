@@ -460,6 +460,27 @@ enum SubsonicID {
 /// On-disk cache for streamed tracks. Cache-then-play keeps the crossfade/gapless
 /// engine (which reads a local AVAudioFile) untouched, and gives offline reuse for
 /// anything already heard.
+/// Reports a download's fraction complete (0...1) as the bytes arrive, at most every
+/// 2%, so the screen can draw it without redrawing on every packet. Navidrome sends a
+/// length for unconverted files; without one the fraction stays at 0.
+final class DownloadProgressDelegate: NSObject, URLSessionTaskDelegate {
+    private let onProgress: (Double) -> Void
+    private var observation: NSKeyValueObservation?
+    private var last = -1.0
+
+    init(_ onProgress: @escaping (Double) -> Void) { self.onProgress = onProgress }
+
+    func urlSession(_ session: URLSession, didCreateTask task: URLSessionTask) {
+        observation = task.progress.observe(\.fractionCompleted) { [weak self] p, _ in
+            guard let self else { return }
+            let f = p.fractionCompleted
+            guard f - self.last >= 0.02 || f >= 1 else { return }
+            self.last = f
+            self.onProgress(f)
+        }
+    }
+}
+
 enum SubsonicCache {
     static var dir: URL {
         let base = (try? FileManager.default.url(for: .cachesDirectory, in: .userDomainMask,
@@ -480,32 +501,102 @@ enum SubsonicCache {
     /// Ensure a track's audio is on disk, downloading via the stream URL if not.
     /// Returns the local file URL for the engine to open.
     static func ensureCached(id: String, suffix: String, using client: SubsonicClient,
-                             maxBitRate: Int? = nil, format: String? = nil) async throws -> URL {
+                             maxBitRate: Int? = nil, format: String? = nil,
+                             onProgress: ((Double) -> Void)? = nil) async throws -> URL {
         let dest = fileURL(id: id, suffix: suffix)
         if isCached(dest) { return dest }
         guard let remote = client.streamURL(id: id, maxBitRate: maxBitRate, format: format) else {
             throw SubsonicError.badURL
         }
-        let (tmp, resp) = try await URLSession.shared.download(from: remote)
+        let (tmp, resp) = try await URLSession.shared.download(
+            from: remote, delegate: onProgress.map(DownloadProgressDelegate.init))
         if let http = resp as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            try? FileManager.default.removeItem(at: tmp)
             throw SubsonicError.http(http.statusCode)
         }
-        try? FileManager.default.removeItem(at: dest)
+        // Never replace a copy that's already there: the player may have it open.
+        // Moving into place is a single rename, so a reader sees no file or a whole one.
+        if isCached(dest) {
+            try? FileManager.default.removeItem(at: tmp)
+            return dest
+        }
         try FileManager.default.moveItem(at: tmp, to: dest)
         return dest
     }
 
-    static func sizeOnDisk() -> Int64 {
-        guard let items = try? FileManager.default.contentsOfDirectory(
-            at: dir, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }
-        return items.reduce(0) { sum, u in
-            sum + Int64((try? u.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+    /// Downloads you chose live here: Application Support, which iOS never purges
+    /// (Caches it may empty when space runs low), and kept out of iCloud backup. The
+    /// stream cache holds a link to each at the song's usual path, so everything that
+    /// finds a song by that path (player, badges, offline filter) finds the download.
+    static var downloadsDir: URL {
+        let fm = FileManager.default
+        let base = (try? fm.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                appropriateFor: nil, create: true))
+            ?? fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        var d = base.appendingPathComponent("Downloads", isDirectory: true)
+        if !fm.fileExists(atPath: d.path) {
+            try? fm.createDirectory(at: d, withIntermediateDirectories: true)
+            var v = URLResourceValues()
+            v.isExcludedFromBackup = true
+            try? d.setResourceValues(v)
         }
+        return d
     }
 
+    /// The file-name stem a server id is cached under (fileURL's naming).
+    static func stem(_ id: String) -> String { id.replacingOccurrences(of: "/", with: "_") }
+
+    /// Where the download of the song cached at `cacheURL` lives.
+    static func downloadedFile(for cacheURL: URL) -> URL {
+        downloadsDir.appendingPathComponent(cacheURL.lastPathComponent)
+    }
+
+    static func isDownloaded(_ cacheURL: URL) -> Bool {
+        FileManager.default.fileExists(atPath: downloadedFile(for: cacheURL).path)
+    }
+
+    static func isLink(_ url: URL) -> Bool {
+        (try? FileManager.default.destinationOfSymbolicLink(atPath: url.path)) != nil
+    }
+
+    /// Point the song's cache path at its download. A plain cached copy already there
+    /// gives way to the link; a player holding it open keeps reading it until done.
+    static func link(_ cacheURL: URL) {
+        let fm = FileManager.default
+        let target = downloadedFile(for: cacheURL)
+        guard fm.fileExists(atPath: target.path) else { return }
+        if (try? fm.destinationOfSymbolicLink(atPath: cacheURL.path)) == target.path { return }
+        try? fm.removeItem(at: cacheURL)
+        try? fm.createSymbolicLink(at: cacheURL, withDestinationURL: target)
+    }
+
+    /// Delete a download and its link. A plain cached copy is left alone.
+    static func removeDownload(_ cacheURL: URL) {
+        let fm = FileManager.default
+        if isLink(cacheURL) { try? fm.removeItem(at: cacheURL) }
+        try? fm.removeItem(at: downloadedFile(for: cacheURL))
+    }
+
+    /// Bytes on disk: downloads, and the play cache (links to downloads not counted).
+    static func sizes() -> (downloads: Int64, cache: Int64) {
+        func total(_ dir: URL, skippingLinks: Bool) -> Int64 {
+            let keys: [URLResourceKey] = [.fileSizeKey, .isSymbolicLinkKey]
+            guard let items = try? FileManager.default.contentsOfDirectory(
+                at: dir, includingPropertiesForKeys: keys) else { return 0 }
+            return items.reduce(0) { sum, u in
+                let v = try? u.resourceValues(forKeys: Set(keys))
+                if skippingLinks && v?.isSymbolicLink == true { return sum }
+                return sum + Int64(v?.fileSize ?? 0)
+            }
+        }
+        return (total(downloadsDir, skippingLinks: false), total(dir, skippingLinks: true))
+    }
+
+    /// Empty the play cache. Downloads, and the links to them, stay.
     static func clear() {
         guard let items = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
         else { return }
-        for u in items { try? FileManager.default.removeItem(at: u) }
+        for u in items where !isLink(u) { try? FileManager.default.removeItem(at: u) }
+    }
     }
 }

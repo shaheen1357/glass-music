@@ -199,12 +199,18 @@ struct TrackActions: View {
                   systemImage: playlists.isLiked(track) ? "heart.slash" : "heart")
         }
         if let sync, SubsonicID.isRemote(track) {
-            if sync.isOnDevice(track) {
+            if sync.isManuallyDownloaded(track) {
                 Button { sync.removeDownload(track) } label: {
                     Label("Remove Download", systemImage: "arrow.down.circle.fill")
                 }
+            } else if sync.isHeldByCollection(track) {
+                // Kept by a downloaded playlist or album: removed from there, not here.
+                Button {} label: {
+                    Label("Downloaded with a Playlist or Album", systemImage: "arrow.down.circle.fill")
+                }
+                .disabled(true)
             } else {
-                Button { Task { await sync.download(track) } } label: {
+                Button { sync.download(track) } label: {
                     Label("Download", systemImage: "arrow.down.circle")
                 }
             }
@@ -266,7 +272,6 @@ struct TrackRow: View {
                         // On the phone's playlist but not on the server yet — upload it.
                         Image(systemName: "arrow.up.circle").font(.caption2).foregroundStyle(.secondary)
                     }
-                    offlineBadge
                     if isCurrent {
                         Image(systemName: player.isPlaying ? "waveform" : "pause.fill")
                             .font(.footnote)
@@ -279,6 +284,8 @@ struct TrackRow: View {
             }
             .buttonStyle(.plain)
             .disabled(isPending)
+
+            offlineBadge                        // its own switch: tapping it never plays
 
             Menu {
                 TrackActions(track: track, onPlay: onPlay, onAddToPlaylist: { showAdd = true })
@@ -293,18 +300,203 @@ struct TrackRow: View {
     }
 
     // On-device state for a server track: filled arrow = downloaded for offline,
-    // cloud = streams (not yet on device). Local / loosely-cached show nothing.
-    @ViewBuilder private var offlineBadge: some View {
+    private var offlineBadge: some View { OfflineBadge(track: track) }
+}
+
+// MARK: - Download state (Spotify-style)
+/// Where a song is, beside its title in every list, and the switch for it. A song
+/// that is your own file on the phone shows nothing. From the server:
+///   cloud        streams          tap: download it
+///   green ring   downloading      tap: stop
+///   clock        waiting for Wi-Fi  tap: go now on mobile data, or stop
+///   red mark     failed           tap: retry
+///   green disc   downloaded       tap: remove the download
+/// A song kept by a downloaded playlist or album says so instead of removing: it
+/// comes off by removing that playlist's or album's download.
+struct OfflineBadge: View {
+    let track: Track
+    @Environment(SubsonicSync.self) private var sync: SubsonicSync?
+    @State private var ask: Ask?
+
+    private enum Ask: Identifiable { case held, waiting; var id: Self { self } }
+
+    var body: some View {
         if let sync, SubsonicID.isRemote(track) {
-            switch sync.availability(track) {
-            case .downloaded:
-                Image(systemName: "arrow.down.circle.fill").font(.caption2).foregroundStyle(.secondary)
-            case .streams:
-                Image(systemName: "cloud").font(.caption2).foregroundStyle(.secondary)
-            case .cached, .local:
-                EmptyView()
+            let state = sync.availability(track)
+            if state != .cached && state != .local {
+                Button { tap(state, sync) } label: { glyph(state, sync) }
+                    .buttonStyle(.plain)
+                    .frame(width: 30, height: 30)
+                    .contentShape(Rectangle())
+                    .confirmationDialog(dialogTitle, isPresented: Binding(
+                        get: { ask != nil }, set: { if !$0 { ask = nil } }), titleVisibility: .visible) {
+                        if ask == .waiting {
+                            Button("Download Now on Mobile Data") { sync.downloadWaitingOnMobileData() }
+                            if sync.isManuallyDownloaded(track) {
+                                Button("Stop Download", role: .destructive) { sync.removeDownload(track) }
+                            }
+                        }
+                        Button("OK", role: .cancel) {}
+                    } message: {
+                        if ask == .held {
+                            Text("It's downloaded with a playlist or album. Remove that playlist's or album's download, or take the song out of it.")
+                        }
+                    }
             }
         }
+    }
+
+    private var dialogTitle: String { ask == .waiting ? "Waiting for Wi-Fi" : "Kept by a download" }
+
+    private func tap(_ state: SubsonicSync.Availability, _ sync: SubsonicSync) {
+        let manual = sync.isManuallyDownloaded(track)
+        switch state {
+        case .streams: sync.download(track)
+        case .failed: sync.retryFailed()
+        case .waiting: ask = .waiting
+        case .downloading, .downloaded:
+            if manual { sync.removeDownload(track) } else { ask = .held }
+        case .cached, .local: break
+        }
+    }
+
+    @ViewBuilder private func glyph(_ state: SubsonicSync.Availability, _ sync: SubsonicSync) -> some View {
+        switch state {
+        case .downloaded:
+            DownloadedBadge(size: 14).accessibilityHint("Removes the download")
+        case .downloading:
+            DownloadRing(progress: sync.downloadProgress(track) ?? 0, size: 14, lineWidth: 1.8)
+                .accessibilityHint("Stops the download")
+        case .waiting:
+            Image(systemName: "clock").font(.caption).foregroundStyle(.secondary)
+                .accessibilityLabel("Waiting for Wi-Fi")
+        case .failed:
+            Image(systemName: "exclamationmark.circle").font(.caption).foregroundStyle(.red)
+                .accessibilityLabel("Download failed").accessibilityHint("Retries")
+        case .streams:
+            Image(systemName: "cloud").font(.caption).foregroundStyle(.secondary)
+                .accessibilityLabel("Streams from the server").accessibilityHint("Downloads it")
+        case .cached, .local:
+            EmptyView()
+        }
+    }
+}
+
+/// The download switch for a playlist or album, in the same spot whatever its state:
+/// plain arrow (tap: download), a ring filling green (tap: stop), a solid green disc
+/// once it's all on the phone (tap: remove the download). Hidden when there's nothing
+/// to download or remove: every song is your own file, or downloaded one by one.
+/// On mobile data it asks first; while songs wait for Wi-Fi it says so.
+struct CollectionDownloadButton: View {
+    let ruleKey: String
+    let tracks: [Track]
+    @Environment(SubsonicSync.self) private var sync: SubsonicSync?
+    @State private var ask: Ask?
+
+    private enum Ask: Identifiable { case cellular, stop, remove; var id: Self { self } }
+
+    var body: some View {
+        if let sync {
+            let status = sync.status(of: tracks)
+            let on = sync.isDownloadRule(ruleKey)
+            if status.total > 0 && (on || !status.complete) {
+                HStack(spacing: 8) {
+                    Button {
+                        if on { ask = status.complete ? .remove : .stop }
+                        else if sync.isOnCellular && !sync.downloadOnMobileData { ask = .cellular }
+                        else { sync.setDownloadRule(ruleKey, on: true) }
+                    } label: {
+                        if on && status.complete {
+                            DownloadedBadge(size: 26)
+                        } else if on {
+                            DownloadRing(progress: status.fraction, size: 26, lineWidth: 3)
+                        } else {
+                            Image(systemName: "arrow.down.circle").font(.system(size: 26)).foregroundStyle(.primary)
+                                .accessibilityLabel("Download")
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    if on && status.waiting > 0 {
+                        Button("Waiting for Wi-Fi") { ask = .cellular }
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else if on && status.failed > 0 {
+                        Button("\(status.failed) failed · Retry") { sync.retryFailed() }
+                            .font(.caption).foregroundStyle(.red)
+                    }
+                }
+                .confirmationDialog(title(for: ask), isPresented: Binding(
+                    get: { ask != nil }, set: { if !$0 { ask = nil } }), titleVisibility: .visible) {
+                    switch ask {
+                    case .cellular:
+                        Button("Download Now") {
+                            if on { sync.downloadWaitingOnMobileData() }
+                            else { sync.setDownloadRule(ruleKey, on: true, allowCellular: true) }
+                        }
+                        if !on { Button("Wait for Wi-Fi") { sync.setDownloadRule(ruleKey, on: true) } }
+                    case .stop:
+                        Button("Stop Downloading", role: .destructive) { sync.setDownloadRule(ruleKey, on: false) }
+                    case .remove:
+                        Button("Remove Download", role: .destructive) { sync.setDownloadRule(ruleKey, on: false) }
+                    case nil:
+                        EmptyView()
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    switch ask {
+                    case .cellular: Text("These are full-quality files, about 25 MB a song.")
+                    case .remove, .stop: Text("The songs stay in the playlist and stream from the server.")
+                    case nil: EmptyView()
+                    }
+                }
+            }
+        }
+    }
+
+    private func title(for ask: Ask?) -> String {
+        switch ask {
+        case .cellular: return "You're on mobile data"
+        case .stop: return "Stop downloading?"
+        case .remove: return "Remove download?"
+        case nil: return ""
+        }
+    }
+}
+
+/// A ring that fills green as a song — or a whole playlist — comes down.
+struct DownloadRing: View {
+    var progress: Double            // 0...1
+    var size: CGFloat = 22
+    var lineWidth: CGFloat = 2.5
+
+    var body: some View {
+        ZStack {
+            Circle().stroke(Color.secondary.opacity(0.3), lineWidth: lineWidth)
+            Circle()
+                .trim(from: 0, to: max(0.03, min(1, progress)))   // a sliver shows it has started
+                .stroke(Color.green, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+                .animation(.linear(duration: 0.25), value: progress)
+            Image(systemName: "arrow.down")
+                .font(.system(size: size * 0.42, weight: .bold))
+                .foregroundStyle(.secondary)
+        }
+        .frame(width: size, height: size)
+        .accessibilityElement()
+        .accessibilityLabel("Downloading")
+        .accessibilityValue("\(Int((min(1, progress) * 100).rounded())) percent")
+    }
+}
+
+/// Everything is on the phone: a solid green disc with the arrow.
+struct DownloadedBadge: View {
+    var size: CGFloat = 22
+
+    var body: some View {
+        Image(systemName: "arrow.down.circle.fill")
+            .symbolRenderingMode(.palette)
+            .foregroundStyle(.white, Color.green)
+            .font(.system(size: size))
+            .accessibilityLabel("Downloaded")
     }
 }
 

@@ -366,6 +366,7 @@ struct AlbumsView: View {
 struct AlbumDetailView: View {
     let album: Album
     @Environment(PlayerEngine.self) private var player
+    @Environment(SubsonicSync.self) private var sync: SubsonicSync?
     @EnvironmentObject var playlists: PlaylistStore
     @State private var addTrack: Track?
 
@@ -381,6 +382,7 @@ struct AlbumDetailView: View {
                         Text(album.artist).font(.title3).foregroundStyle(Color.accentColor)
                     }
                     PlayShuffleButtons(tracks: album.tracks)
+                    CollectionDownloadButton(ruleKey: SubsonicSync.ruleKey(albumID: album.id), tracks: album.tracks)
                 }
                 .frame(maxWidth: .infinity)
                 .listRowSeparator(.hidden)
@@ -403,6 +405,7 @@ struct AlbumDetailView: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        OfflineBadge(track: track)
                         Menu {
                             TrackActions(track: track,
                                          onPlay: { player.play(tracks: album.tracks, startAt: index) },
@@ -424,6 +427,17 @@ struct AlbumDetailView: View {
         .listStyle(.plain)
         .navigationTitle(album.title)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if let sync, sync.isDownloadRule(SubsonicSync.ruleKey(albumID: album.id)) {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button(role: .destructive) {
+                            sync.setDownloadRule(SubsonicSync.ruleKey(albumID: album.id), on: false)
+                        } label: { Label("Remove Download", systemImage: "arrow.down.circle.fill") }
+                    } label: { Image(systemName: "ellipsis.circle") }
+                }
+            }
+        }
         .sheet(item: $addTrack) { AddToPlaylistView(track: $0).environmentObject(playlists) }
     }
 }

@@ -213,7 +213,6 @@ struct PlaylistDetailView: View {
     @EnvironmentObject var stats: PlayStatsStore
     @Environment(PlayerEngine.self) private var player
     @Environment(SubsonicSync.self) private var sync: SubsonicSync?
-    @State private var downloading = false
     @State private var showAddSongs = false
     @State private var showEditDetails = false
     @State private var sortMode: PlaylistSort = .custom
@@ -324,6 +323,8 @@ struct PlaylistDetailView: View {
         .navigationTitle(playlist?.name ?? "Playlist")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $query, prompt: "Find in Playlist")
+        // A downloaded playlist follows its edits: added songs download, removed go.
+        .onChange(of: playlist?.trackIDs ?? []) { _, _ in sync?.reconcileDownloads() }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
@@ -347,10 +348,20 @@ struct PlaylistDetailView: View {
                             withAnimation { editMode = editMode == .active ? .inactive : .active }
                         } label: { Label("Reorder", systemImage: "arrow.up.arrow.down") }
                     }
+                    if let sync, sync.isDownloadRule(SubsonicSync.ruleKey(playlistID: playlistID)) {
+                        Divider()
+                        Button(role: .destructive) {
+                            sync.setDownloadRule(SubsonicSync.ruleKey(playlistID: playlistID), on: false)
+                        } label: { Label("Remove Download", systemImage: "arrow.down.circle.fill") }
+                    }
                     if playlist?.kind == .user {
                         Divider()
                         Button(role: .destructive) {
-                            if let p = playlist { playlists.delete(p); dismiss() }
+                            if let p = playlist {
+                                playlists.delete(p)
+                                sync?.reconcileDownloads()      // its downloads go with it
+                                dismiss()
+                            }
                         } label: { Label("Delete Playlist", systemImage: "trash") }
                     }
                 } label: { Image(systemName: "ellipsis.circle") }
@@ -429,22 +440,7 @@ struct PlaylistDetailView: View {
                 Image(systemName: "arrow.up.arrow.down")
                     .font(.title3).foregroundStyle(.primary)
             }
-            if let sync, storedTracks.contains(where: { SubsonicID.isRemote($0) }) {
-                Button {
-                    Task {
-                        downloading = true
-                        await sync.download(storedTracks.filter { SubsonicID.isRemote($0) })
-                        downloading = false
-                    }
-                } label: {
-                    if downloading {
-                        ProgressView()
-                    } else {
-                        Image(systemName: "arrow.down.circle").font(.title3).foregroundStyle(.primary)
-                    }
-                }
-                .disabled(downloading)
-            }
+            CollectionDownloadButton(ruleKey: SubsonicSync.ruleKey(playlistID: playlistID), tracks: storedTracks)
             Spacer(minLength: 8)
             Button {
                 stats.recordPlaylistInteraction(playlistID)
