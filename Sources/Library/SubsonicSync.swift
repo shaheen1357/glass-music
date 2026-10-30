@@ -66,6 +66,12 @@ final class SubsonicSync {
         get { UserDefaults.standard.integer(forKey: "sync.lastScanCount") }
         set { UserDefaults.standard.set(newValue, forKey: "sync.lastScanCount") }
     }
+    /// The missing playlist entries the last catalog diff ran for, so entries the
+    /// server itself no longer has don't trigger a diff on every open.
+    private var lastDiffedMissing: String {
+        get { UserDefaults.standard.string(forKey: "sync.lastDiffedMissing") ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: "sync.lastDiffedMissing") }
+    }
     private var lastPushedSignature: String {
         get { UserDefaults.standard.string(forKey: "sync.lastPushedSignature") ?? "" }
         set { UserDefaults.standard.set(newValue, forKey: "sync.lastPushedSignature") }
@@ -108,9 +114,18 @@ final class SubsonicSync {
         defer { syncInFlight = false }
         if shouldRestore() || !repairDone || !pathCatalogDone { await fullSync(); return }
 
-        if let count = await serverSongCountChanged(client) {
-            // Record the new count only once the diff landed, so a failed pull retries.
-            if (try? await syncCatalogDelta(client)) != nil { lastScanCount = count }
+        // Diff the catalog when the song count moved, or when a playlist points at a
+        // server song the catalog lacks. The count alone isn't enough: an older build
+        // recorded it before fetching, so a song it skipped stayed a greyed placeholder
+        // with the count already "seen".
+        let count = await serverSongCountChanged(client)
+        let missing = playlists.serverEntriesMissing(from: library).sorted().joined(separator: ",")
+        if count != nil || (!missing.isEmpty && missing != lastDiffedMissing) {
+            // Record only once the diff landed, so a failed pull retries.
+            if (try? await syncCatalogDelta(client)) != nil {
+                if let count { lastScanCount = count }
+                lastDiffedMissing = playlists.serverEntriesMissing(from: library).sorted().joined(separator: ",")
+            }
             try? await reconcilePlaylists(client, mode: .merge)
         } else {
             try? await reconcilePlaylists(client, mode: .additive)

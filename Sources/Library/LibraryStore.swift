@@ -156,6 +156,9 @@ final class LibraryStore: ObservableObject {
     /// The local copy of a server song, when the two collapsed into one row — so a
     /// playlist entry anchored to the server id still resolves to the file on the phone.
     func localTwin(ofRemoteID id: String) -> Track? { localByRemoteID[id] }
+
+    /// Ids of every server song in the catalog the phone holds (twins included).
+    private(set) var remoteIDs: Set<String> = []
     private var localByRemoteID: [String: Track] = [:]
 
     private var remoteIndex = RemoteIndex()
@@ -171,6 +174,7 @@ final class LibraryStore: ObservableObject {
     /// artist/album tags disagree between the two sources still collapses to one row.
     private func rebuildMerged() {
         remoteIndex = RemoteIndex(remoteTracks)
+        remoteIDs = Set(remoteTracks.map(\.id))
         var twinIDs = Set<String>()
         var keyMap: [String: String] = [:]
         var localByRemote: [String: Track] = [:]

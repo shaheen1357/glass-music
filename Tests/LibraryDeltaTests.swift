@@ -28,6 +28,28 @@ final class LibraryDeltaTests: XCTestCase {
         XCTAssertFalse(lib.tracks.contains { $0.id == a.id })
     }
 
+    // The gift / Mvt. 5 case: the playlist arrived, the song didn't, and the song count
+    // was already recorded — only the missing entry can tell the sync to diff.
+    func testPlaylistEntryMissingFromCatalogIsReported() {
+        let lib = LibraryStore()
+        let known = remote("k", title: "Schmetterling", album: "Tokyo Ghoul OST")
+        lib.mergeRemote([known], persist: false)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("pl-\(UUID().uuidString).json")
+        let store = PlaylistStore(fileURL: url)
+        let p = store.createPlaylist(name: "gift")
+        let mvt5 = remote("m", title: "Mvt. 5 \"Schmetterling\"", album: "Tokyo Ghoul:re OST")
+        store.add(known, to: p.id)
+        store.add(mvt5, to: p.id)
+        store.add(Track(id: "/docs/local.flac", url: URL(fileURLWithPath: "/docs/local.flac"),
+                        title: "Local", artist: "A", album: "B", trackNumber: 0,
+                        duration: 1, artworkData: nil, dateAdded: Date()), to: p.id)
+
+        XCTAssertEqual(store.serverEntriesMissing(from: lib), [mvt5.id])   // phone-only entries never count
+
+        lib.applyRemoteDelta(added: [mvt5], removedIDs: [], persist: false)
+        XCTAssertTrue(store.serverEntriesMissing(from: lib).isEmpty)
+    }
+
     func testKeepsArtworkOfSongsAlreadyHeld() {
         let lib = LibraryStore()
         let b = remote("b", title: "XL-TT", album: "AOT OST")

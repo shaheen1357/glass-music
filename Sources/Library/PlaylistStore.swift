@@ -436,6 +436,18 @@ final class PlaylistStore: ObservableObject {
     }
 
     // MARK: - Resolve
+    /// Server songs some playlist points at that the phone's catalog doesn't hold —
+    /// the entries that show as greyed placeholders until the catalog catches up.
+    func serverEntriesMissing(from library: LibraryStore) -> Set<String> {
+        var out = Set<String>()
+        for p in playlists {
+            for id in p.trackIDs where id.hasPrefix(SubsonicID.prefix) && !library.remoteIDs.contains(id) {
+                out.insert(id)
+            }
+        }
+        return out
+    }
+
     func tracks(for playlist: Playlist, in library: LibraryStore) -> [Track] {
         // Resolve by content FIRST: the content index holds the best available source
         // for a song — the local file if it's on the device, otherwise the server copy
