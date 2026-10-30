@@ -13,3 +13,4 @@ __pycache__/
 tools/folderlinks/.env
 tools/folderlinks/state.json*
 tools/folderlinks/run.log
+tools/folderlinks/.lock

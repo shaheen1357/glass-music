@@ -23,7 +23,7 @@ State: state.json next to this file. Credentials: .env next to this file
 
 Changing a link never adds songs by itself: only songs that arrive afterwards move.
 """
-import hashlib, json, os, secrets, sqlite3, sys, time, urllib.parse, urllib.request
+import fcntl, hashlib, json, os, secrets, sqlite3, sys, time, urllib.parse, urllib.request
 from collections import defaultdict
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -241,6 +241,13 @@ def show():
 
 
 if __name__ == "__main__":
+    # One run at a time: two overlapping runs would both see the same song as new
+    # and append it twice.
+    lock = open(os.path.join(HERE, ".lock"), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit(0)
     args = sys.argv[1:]
     if args[:1] == ["--link"] and len(args) == 3:
         relink(args[1], args[2])
