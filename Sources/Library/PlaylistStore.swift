@@ -402,7 +402,21 @@ final class PlaylistStore: ObservableObject {
         playlists[i].trackIDs = ids
         playlists[i].trackKeys = keys
         playlists[i].trackMeta = meta
-        playlists[i].syncBaseline = orderedKeys
+        // The baseline is what BOTH sides hold. A phone-only song (no server copy, so it
+        // can't be pushed) must stay out of it — otherwise the next merge reads "in the
+        // baseline, missing on the server" as a server-side removal and drops it.
+        playlists[i].syncBaseline = orderedKeys.filter { serverKeys.contains($0) || library.serverHasKey($0) }
+    }
+
+    /// After a successful push the server holds exactly the sent entries, so they become
+    /// the merge baseline. Without this a song the phone added and the server later
+    /// removed is indistinguishable from a fresh phone add, and would be pushed back.
+    func markSynced(id: String, entryIDs: [String], using library: LibraryStore) {
+        guard let i = playlists.firstIndex(where: { $0.id == id }) else { return }
+        let p = playlists[i]
+        playlists[i].syncBaseline = entryIDs.compactMap { keyFor($0, in: p, library: library) }
+            .map { library.serverKeyByLocalKey[$0] ?? $0 }
+        save()
     }
 
     func setServerID(_ serverID: String, forID id: String) {
@@ -429,6 +443,9 @@ final class PlaylistStore: ObservableObject {
         // instead of dropping it from the playlist. Fall back to a direct id lookup for
         // any entry that hasn't got a content key yet.
         playlist.trackIDs.compactMap { id in
+            // A server-anchored entry whose file is also on the phone: that exact file
+            // (matched by name), before any tag-based guess.
+            if let t = library.localTwin(ofRemoteID: id) { return t }
             if let key = playlist.trackKeys?[id], let t = library.trackByContentKey[key] { return t }
             // Looser match (title + duration) when the content key missed because a tag
             // was read differently on each source — still resolves to the local copy,

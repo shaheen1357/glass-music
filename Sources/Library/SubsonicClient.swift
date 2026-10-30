@@ -128,6 +128,20 @@ struct SubsonicClient: Sendable {
         return body.searchResult3 ?? SubSearchResult()
     }
 
+    /// One page of the whole song catalog: OpenSubsonic's empty search3 query returns
+    /// every song in natural order (Navidrome ≥ 0.53). One request per `size` songs —
+    /// instead of one getAlbum per album, which is ~340 round trips on a singles library.
+    func allSongs(size: Int = 500, offset: Int = 0) async throws -> [SubChild] {
+        let items = [URLQueryItem(name: "query", value: "\"\""),
+                     URLQueryItem(name: "artistCount", value: "0"),
+                     URLQueryItem(name: "albumCount", value: "0"),
+                     URLQueryItem(name: "songCount", value: String(size)),
+                     URLQueryItem(name: "songOffset", value: String(offset))]
+        let body = try await get(SubEnvelope<SearchBody>.self, "search3", items).response
+        try check(body.status, body.error)
+        return body.searchResult3?.song ?? []
+    }
+
     func scrobble(id: String, submission: Bool = true) async throws {
         let items = [URLQueryItem(name: "id", value: id),
                      URLQueryItem(name: "submission", value: submission ? "true" : "false")]
@@ -304,6 +318,7 @@ struct SubPlaylist: Decodable, Identifiable, Hashable {
     let name: String?
     let songCount: Int?
     let owner: String?
+    var changed: String? = nil      // last-modified time; tells the cheap sync which lists moved
 }
 struct PlaylistBody: Decodable {
     let status: String?; let error: SubApiError?
@@ -416,6 +431,8 @@ struct RemoteIndex {
         if let n = track.fileNameKey, let r = byFileName[n] { return r }
         return byContentKey[track.contentKey] ?? byLooseKey[track.looseKey]
     }
+
+    func hasContentKey(_ key: String) -> Bool { byContentKey[key] != nil }
 
     /// True if the server has any song with this title — used to tell a song that
     /// failed to match apart from one that is genuinely phone-only.

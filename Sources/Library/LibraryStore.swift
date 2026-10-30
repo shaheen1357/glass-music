@@ -152,6 +152,14 @@ final class LibraryStore: ObservableObject {
     /// True if the server holds any song with this title (see RemoteIndex.hasTitle).
     func serverHasTitle(_ title: String) -> Bool { remoteIndex.hasTitle(title) }
 
+    /// True if a song with this (server-space) content key is on the server.
+    func serverHasKey(_ key: String) -> Bool { remoteIndex.hasContentKey(key) }
+
+    /// The local copy of a server song, when the two collapsed into one row — so a
+    /// playlist entry anchored to the server id still resolves to the file on the phone.
+    func localTwin(ofRemoteID id: String) -> Track? { localByRemoteID[id] }
+    private var localByRemoteID: [String: Track] = [:]
+
     private var remoteIndex = RemoteIndex()
     /// A local song's content key -> its server twin's, where the two differ (a
     /// multi-artist tag reads "A" locally but "A • B" on Navidrome). Lets the playlist
@@ -167,12 +175,15 @@ final class LibraryStore: ObservableObject {
         remoteIndex = RemoteIndex(remoteTracks)
         var twinIDs = Set<String>()
         var keyMap: [String: String] = [:]
+        var localByRemote: [String: Track] = [:]
         for t in localTracks {
             guard let twin = remoteIndex.twin(of: t) else { continue }
             twinIDs.insert(twin.id)
+            if localByRemote[twin.id] == nil { localByRemote[twin.id] = t }
             if twin.contentKey != t.contentKey { keyMap[t.contentKey] = twin.contentKey }
         }
         serverKeyByLocalKey = keyMap
+        localByRemoteID = localByRemote
         let localKeys = Set(localTracks.map { $0.contentKey })
         let localLoose = Set(localTracks.map { $0.looseKey })
         var merged = localTracks

@@ -75,6 +75,20 @@ final class SubsonicSync {
         get { Set(UserDefaults.standard.stringArray(forKey: "sync.albumIDs") ?? []) }
         set { UserDefaults.standard.set(Array(newValue), forKey: "sync.albumIDs") }
     }
+    /// Each server playlist's last-modified stamp as of our last look. The song-count
+    /// probe can't see a song added to a playlist in the web UI; a moved stamp can.
+    private var playlistStamps: [String: String] {
+        get { UserDefaults.standard.dictionary(forKey: "sync.playlistStamps") as? [String: String] ?? [:] }
+        set { UserDefaults.standard.set(newValue, forKey: "sync.playlistStamps") }
+    }
+    private static func stamp(_ p: SubPlaylist) -> String { "\(p.changed ?? "")|\(p.songCount ?? -1)" }
+    private func recordStamps(_ lists: [SubPlaylist]) {
+        playlistStamps = Dictionary(lists.map { ($0.id, Self.stamp($0)) }, uniquingKeysWith: { a, _ in a })
+    }
+
+    /// One sync at a time. Foregrounding mid-walk used to start a second full walk on
+    /// top of the first (and an interrupted one restarted from scratch every open).
+    private var syncInFlight = false
 
     private enum ReconcileMode { case authoritative, merge, additive }
 
@@ -93,9 +107,11 @@ final class SubsonicSync {
     /// push the phone's edits only when they changed. This is what keeps opening the app
     /// from re-syncing the whole library every time.
     func autoSyncIfAllowed() async {
-        guard let client = store.client, !library.effectiveOffline else { return }
+        guard !syncInFlight, let client = store.client, !library.effectiveOffline else { return }
         if net.isCellular && !useMobileData { return }
-        if shouldRestore() || !repairDone || !pathCatalogDone { await syncNow(); return }
+        syncInFlight = true
+        defer { syncInFlight = false }
+        if shouldRestore() || !repairDone || !pathCatalogDone { await fullSync(); return }
 
         if await serverSongCountChanged(client) {
             try? await syncCatalogDelta(client)
@@ -146,10 +162,18 @@ final class SubsonicSync {
     /// refresh, the fresh-install restore, and the one-time repair — never on a plain app
     /// open (that goes through autoSyncIfAllowed's cheap probe).
     func syncNow() async {
+        guard !syncInFlight else { return }
+        syncInFlight = true
+        defer { syncInFlight = false }
+        await fullSync()
+    }
+
+    private func fullSync() async {
         guard let client = store.client else { return }
         state = .syncing
         do {
             try await syncCatalog(client)                        // read-only mirror for streaming + dedup
+            pathCatalogDone = true    // paths are in; a later playlist/likes error mustn't re-walk
             if let status = try? await client.scanStatus() { lastScanCount = status.count }
 
             // Server wins for shared playlists on a fresh install or the one-time repair;
@@ -159,7 +183,6 @@ final class SubsonicSync {
             try await syncLiked(client)
 
             repairDone = true
-            pathCatalogDone = true
             libraryProvisioned = true
             lastPushedSignature = playlistSignature()
             lastSynced = Date()
@@ -182,17 +205,26 @@ final class SubsonicSync {
             let server = await resolve(lists, client)
             playlists.applyServerPlaylistsAuthoritative(server)
             await pushPhoneOnlyPlaylists(client, server: server)
+            if let fresh = try? await client.serverPlaylists() { recordStamps(fresh) }
         case .merge:
             let server = await resolve(lists, client)
             playlists.mergeServerPlaylists(server, using: library)
+            recordStamps(lists)
             await pushPlaylists()
         case .additive:
             // Cheap path: only resolve (fetch songs for) playlists the phone lacks, so a
-            // new server playlist like hindi arrives without re-pulling everything.
+            // new server playlist like hindi arrives without re-pulling everything...
             let haveIDs = Set(playlists.playlists.compactMap { $0.serverID })
             let haveNames = Set(playlists.playlists.filter { $0.kind == .user }.map { $0.name })
             let newOnes = lists.filter { !haveIDs.contains($0.id) && !haveNames.contains($0.name ?? "") }
             if !newOnes.isEmpty { playlists.applyServerPlaylists(await resolve(newOnes, client)) }
+            // ...and the ones the phone has whose server stamp moved (a song added in the
+            // web UI), merged before any push so the push can't overwrite that edit. With
+            // no stamps yet (first run of this build) every known list merges once.
+            let stamps = playlistStamps
+            let moved = lists.filter { haveIDs.contains($0.id) && stamps[$0.id] != Self.stamp($0) }
+            if !moved.isEmpty { playlists.mergeServerPlaylists(await resolve(moved, client), using: library) }
+            recordStamps(lists)
             if playlistSignature() != lastPushedSignature { await pushPlaylists() }
         }
         lastPushedSignature = playlistSignature()
@@ -254,39 +286,38 @@ final class SubsonicSync {
     }
 
     private func syncCatalog(_ client: SubsonicClient) async throws {
-        // Pull albums in bulk (paged), then songs per album, merging incrementally
-        // so the library fills in live with a running count — no silent wait. Cover
-        // art is fetched afterwards in the background so it never blocks anything.
+        // Every song in a few paged search3 requests (500 a page), then ONE merge into
+        // the library. The old walk fetched each album separately and re-merged every
+        // third album — a full re-sort, regroup and republish on the main thread each
+        // time, ~113 of them for 340 albums, which is what froze the UI. The running
+        // count is plain text, so it stays live for free. Cover art follows in the
+        // background, grouped by cover id (one fetch per album cover, as before).
         var all: [Track] = []
-        var coverJobs: [(cover: String, ids: [String])] = []
+        var idsByCover: [String: [String]] = [:]
         var albumIDs = Set<String>()
         var offset = 0
-        var processed = 0
         let pageSize = 500
         while true {
-            let page = try await client.newestAlbums(size: pageSize, offset: offset)
-            if page.isEmpty { break }
-            for album in page {
-                let songs = (try? await client.songs(forAlbum: album.id)) ?? []
-                let mapped = songs.map { client.track(from: $0) }
-                all.append(contentsOf: mapped)
-                albumIDs.insert(album.id)
-                if let cover = album.coverArt { coverJobs.append((cover, mapped.map(\.id))) }
-                processed += 1
-                // Update the count and paint the library every few albums, so songs
-                // appear as they arrive instead of after the whole walk.
-                if processed % 3 == 0 {
-                    progressText = "Syncing library… \(all.count) songs"
-                    library.mergeRemote(all, persist: false)
-                }
+            let page = try await client.allSongs(size: pageSize, offset: offset)
+            for c in page {
+                let t = client.track(from: c)
+                all.append(t)
+                if let a = c.albumId { albumIDs.insert(a) }
+                if let cover = c.coverArt { idsByCover[cover, default: []].append(t.id) }
             }
             offset += page.count
+            progressText = "Syncing library… \(all.count) songs"
             if page.count < pageSize { break }
         }
-        library.mergeRemote(all, persist: true)             // final merge + cache
+        // An empty catalog from a server that does have songs means this search form
+        // isn't supported — never wipe the cached catalog on that.
+        if all.isEmpty, let status = try? await client.scanStatus(), status.count > 0 {
+            throw SubsonicError.malformed
+        }
+        library.mergeRemote(all, persist: true)             // the one merge + cache
         syncedAlbumIDs = albumIDs                            // baseline for later delta pulls
         progressText = nil
-        let jobs = coverJobs
+        let jobs = idsByCover.map { (cover: $0.key, ids: $0.value) }
         Task { @MainActor [weak self] in await self?.backfillArtwork(jobs, client: client) }
     }
 
@@ -299,8 +330,10 @@ final class SubsonicSync {
                let data = await Self.fetchThumbnail(url) {
                 for id in job.ids { art[id] = data }
             }
-            // Apply in batches so covers pop in as they arrive, not all at the end.
-            if art.count >= 40 || i == jobs.count - 1 {
+            // Apply in batches so covers pop in as they arrive, not all at the end. Each
+            // apply re-merges the library and rewrites the catalog cache, so batches are
+            // wide (150 songs) to keep that to a handful of passes.
+            if art.count >= 150 || i == jobs.count - 1 {
                 library.applyRemoteArtwork(art)
                 art.removeAll(keepingCapacity: true)
             }
@@ -351,19 +384,23 @@ final class SubsonicSync {
     /// copy (the server can't hold audio it doesn't have) but stays on the phone.
     /// `unmatched` counts the songs the server DOES seem to have (same title) yet no
     /// twin was found for — a failed match, not a phone-only song.
-    private func mapSongIDs(_ pl: Playlist) -> (ids: [String], unmatched: [String]) {
+    /// `sent` is the phone entries that made it into `ids` — what the server will hold.
+    private func mapSongIDs(_ pl: Playlist) -> (ids: [String], unmatched: [String], sent: [String]) {
         var ids: [String] = []
         var unmatched: [String] = []
+        var sent: [String] = []
         for id in pl.trackIDs {
-            if id.hasPrefix(SubsonicID.prefix) { ids.append(String(id.dropFirst(SubsonicID.prefix.count))); continue }
+            if id.hasPrefix(SubsonicID.prefix) {
+                ids.append(String(id.dropFirst(SubsonicID.prefix.count))); sent.append(id); continue
+            }
             guard let t = library.tracksByID[id] else { continue }
             if let twin = library.remoteTwin(of: t), let sid = SubsonicID.serverID(for: twin) {
-                ids.append(sid)
+                ids.append(sid); sent.append(id)
             } else if library.serverHasTitle(t.title) {
                 unmatched.append(t.title)
             }
         }
-        return (ids, unmatched)
+        return (ids, unmatched, sent)
     }
 
     /// Playlists held back from the last push because some songs failed to match —
@@ -391,9 +428,17 @@ final class SubsonicSync {
         var idByName: [String: String] = [:]
         for s in serverLists { if let n = s.name { idByName[n] = s.id } }
 
+        // A server list that changed since we last looked (edited in the web UI after
+        // the last open) is merged in first — setPlaylist replaces the whole list, so
+        // pushing the phone's copy blind would erase that edit.
+        let stamps = playlistStamps
+        let mine = Set(playlists.playlists.compactMap { $0.serverID })
+        let moved = serverLists.filter { mine.contains($0.id) && stamps[$0.id] != nil && stamps[$0.id] != Self.stamp($0) }
+        if !moved.isEmpty { playlists.mergeServerPlaylists(await resolve(moved, client), using: library) }
+
         var held: [String] = []
         for pl in playlists.playlists where pl.kind == .user {
-            let (songIDs, unmatched) = mapSongIDs(pl)
+            let (songIDs, unmatched, sent) = mapSongIDs(pl)
             guard !songIDs.isEmpty else { continue }
             let target = pl.serverID.flatMap { liveIDs.contains($0) ? $0 : nil } ?? idByName[pl.name]
             if target != nil && !unmatched.isEmpty {
@@ -408,10 +453,14 @@ final class SubsonicSync {
                     playlists.setServerID(created.id, forID: pl.id)
                     idByName[pl.name] = created.id   // guard a same-named sibling in this same pass
                 }
+                playlists.markSynced(id: pl.id, entryIDs: sent, using: library)
             } catch { /* best-effort per playlist */ }
         }
         pushWarning = held.isEmpty ? nil
             : "Not synced — songs didn't match the server: " + held.joined(separator: ", ")
+        // Our own pushes moved the server's stamps; record them so the next open
+        // doesn't mistake them for web-UI edits.
+        if let fresh = try? await client.serverPlaylists() { recordStamps(fresh) }
         await pushLikedStars(client)
     }
 
@@ -424,10 +473,11 @@ final class SubsonicSync {
         for pl in playlists.playlists where pl.kind == .user {
             if let sid = pl.serverID, ids.contains(sid) { continue }
             if names.contains(pl.name) { continue }
-            let songIDs = mapSongIDs(pl).ids
-            guard !songIDs.isEmpty else { continue }
-            if let created = try? await client.createPlaylist(name: pl.name, songIDs: songIDs) {
+            let mapped = mapSongIDs(pl)
+            guard !mapped.ids.isEmpty else { continue }
+            if let created = try? await client.createPlaylist(name: pl.name, songIDs: mapped.ids) {
                 playlists.setServerID(created.id, forID: pl.id)
+                playlists.markSynced(id: pl.id, entryIDs: mapped.sent, using: library)
             }
         }
         await pushLikedStars(client)

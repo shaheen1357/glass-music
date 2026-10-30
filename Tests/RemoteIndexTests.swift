@@ -66,6 +66,38 @@ final class RemoteIndexTests: XCTestCase {
         XCTAssertEqual(RemoteIndex([r]).twin(of: l)?.id, r.id)
     }
 
+    func testHasContentKeyUsesServerSpellingOnly() {
+        let r = remote("g", path: nil, title: "Angetenar",
+                       artist: "Rompasso • Rich The Kid", album: "Angetenar", duration: 190)
+        let l = local("Rompasso - Angetenar.flac", title: "Angetenar",
+                      artist: "Rompasso", album: "Angetenar", duration: 190.91)
+        let index = RemoteIndex([r])
+        XCTAssertTrue(index.hasContentKey(r.contentKey))
+        XCTAssertFalse(index.hasContentKey(l.contentKey))   // local spelling: map it first
+    }
+
+    // Shapes as Navidrome 0.64 sends them (getPlaylists / search3 song entries).
+    func testDecodesPlaylistStampAndRealPath() throws {
+        let lists = """
+        {"subsonic-response":{"status":"ok","playlists":{"playlist":[
+          {"id":"p1","name":"hindi","songCount":39,"owner":"nik1357f",
+           "changed":"2026-10-30T06:16:30.085Z"}]}}}
+        """
+        let pl = try JSONDecoder().decode(SubEnvelope<PlaylistsBody>.self, from: Data(lists.utf8))
+            .response.playlists?.playlist?.first
+        XCTAssertEqual(pl?.changed, "2026-10-30T06:16:30.085Z")
+        XCTAssertEqual(pl?.songCount, 39)
+
+        let songs = """
+        {"subsonic-response":{"status":"ok","searchResult3":{"song":[
+          {"id":"s1","title":"Angetenar","artist":"Rompasso • Rich The Kid","duration":190,
+           "path":"/music/original volume 8/Rompasso - Angetenar.flac","albumId":"a1"}]}}}
+        """
+        let song = try JSONDecoder().decode(SubEnvelope<SearchBody>.self, from: Data(songs.utf8))
+            .response.searchResult3?.song?.first
+        XCTAssertEqual(song?.path, "/music/original volume 8/Rompasso - Angetenar.flac")
+    }
+
     func testNoTwinForPhoneOnlySong() {
         let r = remote("e", path: "/music/x/Other.flac", title: "Other",
                        artist: "Z", album: "Z", duration: 100)
