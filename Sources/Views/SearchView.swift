@@ -10,14 +10,18 @@ struct SearchView: View {
 
     // Songs only. Albums / artists / playlists each have their own scoped search
     // inside their browse views; the global Search tab is for finding a song.
+    // library.tracks already holds one row per song (a server copy of a song on the
+    // phone is dropped as its twin), so this lists the phone's songs first, then the
+    // server-only ones.
     private var results: [Track] {
         let q = trimmed.lowercased()
         guard !q.isEmpty else { return [] }
-        return library.tracks.filter {
+        let hits = library.tracks.filter {
             $0.title.lowercased().contains(q) ||
             $0.artist.lowercased().contains(q) ||
             $0.album.lowercased().contains(q)
         }
+        return hits.filter { !SubsonicID.isRemote($0) } + hits.filter { SubsonicID.isRemote($0) }
     }
 
     private var resolvedRecents: [ResolvedRecent] { library.resolve(recents.items) }

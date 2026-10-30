@@ -70,11 +70,6 @@ final class SubsonicSync {
         get { UserDefaults.standard.string(forKey: "sync.lastPushedSignature") ?? "" }
         set { UserDefaults.standard.set(newValue, forKey: "sync.lastPushedSignature") }
     }
-    /// Album ids already folded into the catalog, so a delta pull fetches only new ones.
-    private var syncedAlbumIDs: Set<String> {
-        get { Set(UserDefaults.standard.stringArray(forKey: "sync.albumIDs") ?? []) }
-        set { UserDefaults.standard.set(Array(newValue), forKey: "sync.albumIDs") }
-    }
     /// Each server playlist's last-modified stamp as of our last look. The song-count
     /// probe can't see a song added to a playlist in the web UI; a moved stamp can.
     private var playlistStamps: [String: String] {
@@ -113,8 +108,9 @@ final class SubsonicSync {
         defer { syncInFlight = false }
         if shouldRestore() || !repairDone || !pathCatalogDone { await fullSync(); return }
 
-        if await serverSongCountChanged(client) {
-            try? await syncCatalogDelta(client)
+        if let count = await serverSongCountChanged(client) {
+            // Record the new count only once the diff landed, so a failed pull retries.
+            if (try? await syncCatalogDelta(client)) != nil { lastScanCount = count }
             try? await reconcilePlaylists(client, mode: .merge)
         } else {
             try? await reconcilePlaylists(client, mode: .additive)
@@ -122,13 +118,11 @@ final class SubsonicSync {
         lastSynced = Date()
     }
 
-    /// True if the server's media count differs from last sync (and records the new
-    /// count). One cheap request that gates the whole catalog walk.
-    private func serverSongCountChanged(_ client: SubsonicClient) async -> Bool {
-        guard let status = try? await client.scanStatus(), !status.scanning else { return false }
-        guard status.count != lastScanCount else { return false }
-        lastScanCount = status.count
-        return true
+    /// The server's media count if it differs from last sync, else nil. One cheap
+    /// request that gates the catalog diff.
+    private func serverSongCountChanged(_ client: SubsonicClient) async -> Int? {
+        guard let status = try? await client.scanStatus(), !status.scanning else { return nil }
+        return status.count != lastScanCount ? status.count : nil
     }
 
     /// Push the phone's playlists up when they differ from what we last sent. Fire-and-
@@ -248,34 +242,27 @@ final class SubsonicSync {
         return out
     }
 
-    /// Pull only the albums added since the last sync (newest-first until we hit ones we
-    /// already have) and fold them in — so a grown server doesn't trigger a full walk.
+    /// The server's song count moved: diff the whole song list (a few paged search3
+    /// requests, the same as the full sync) against the catalog we hold, fold in the new
+    /// songs and drop the deleted ones in one rebuild. The old delta walked newest albums,
+    /// but Navidrome dates an album by its OLDEST song, so a track added to an album the
+    /// server already had never surfaced — not in search, and only as a placeholder in a
+    /// playlist. Cover art is fetched only for the new songs.
     private func syncCatalogDelta(_ client: SubsonicClient) async throws {
-        let known = syncedAlbumIDs
-        var newTracks: [Track] = []
-        var coverJobs: [(cover: String, ids: [String])] = []
-        var newIDs = Set<String>()
-        var offset = 0
-        let pageSize = 100
-        while true {
-            let page = try await client.newestAlbums(size: pageSize, offset: offset)
-            if page.isEmpty { break }
-            var hitKnown = false
-            for album in page {
-                if known.contains(album.id) { hitKnown = true; continue }
-                let songs = (try? await client.songs(forAlbum: album.id)) ?? []
-                let mapped = songs.map { client.track(from: $0) }
-                newTracks.append(contentsOf: mapped)
-                if let cover = album.coverArt { coverJobs.append((cover, mapped.map(\.id))) }
-                newIDs.insert(album.id)
-            }
-            offset += page.count
-            if hitKnown || page.count < pageSize { break }
+        defer { progressText = nil }
+        let fresh = try await fetchCatalog(client)
+        guard !fresh.tracks.isEmpty else { return }          // never wipe on an empty reply
+        let known = Set(library.remoteTracks.map { $0.id })
+        let freshIDs = Set(fresh.tracks.map { $0.id })
+        let added = fresh.tracks.filter { !known.contains($0.id) }
+        let removed = known.subtracting(freshIDs)
+        guard !added.isEmpty || !removed.isEmpty else { return }
+        library.applyRemoteDelta(added: added, removedIDs: removed)
+        let addedIDs = Set(added.map { $0.id })
+        let jobs = fresh.idsByCover.compactMap { cover, ids -> (cover: String, ids: [String])? in
+            let mine = ids.filter { addedIDs.contains($0) }
+            return mine.isEmpty ? nil : (cover, mine)
         }
-        guard !newTracks.isEmpty else { return }
-        library.appendRemote(newTracks)
-        syncedAlbumIDs = known.union(newIDs)
-        let jobs = coverJobs
         Task { @MainActor [weak self] in await self?.backfillArtwork(jobs, client: client) }
     }
 
@@ -289,12 +276,22 @@ final class SubsonicSync {
         // Every song in a few paged search3 requests (500 a page), then ONE merge into
         // the library. The old walk fetched each album separately and re-merged every
         // third album — a full re-sort, regroup and republish on the main thread each
-        // time, ~113 of them for 340 albums, which is what froze the UI. The running
-        // count is plain text, so it stays live for free. Cover art follows in the
-        // background, grouped by cover id (one fetch per album cover, as before).
+        // time, ~113 of them for 340 albums, which is what froze the UI. Cover art
+        // follows in the background, grouped by cover id (one fetch per album cover).
+        let fresh = try await fetchCatalog(client)
+        library.mergeRemote(fresh.tracks, persist: true)     // the one merge + cache
+        progressText = nil
+        let jobs = fresh.idsByCover.map { (cover: $0.key, ids: $0.value) }
+        Task { @MainActor [weak self] in await self?.backfillArtwork(jobs, client: client) }
+    }
+
+    /// The server's whole song list, paged through search3. The running count is plain
+    /// text, so it stays live for free. Throws on an empty list from a server that does
+    /// have songs (this search form unsupported), so the cached catalog is never wiped.
+    private func fetchCatalog(_ client: SubsonicClient) async throws
+        -> (tracks: [Track], idsByCover: [String: [String]]) {
         var all: [Track] = []
         var idsByCover: [String: [String]] = [:]
-        var albumIDs = Set<String>()
         var offset = 0
         let pageSize = 500
         while true {
@@ -302,23 +299,16 @@ final class SubsonicSync {
             for c in page {
                 let t = client.track(from: c)
                 all.append(t)
-                if let a = c.albumId { albumIDs.insert(a) }
                 if let cover = c.coverArt { idsByCover[cover, default: []].append(t.id) }
             }
             offset += page.count
             progressText = "Syncing library… \(all.count) songs"
             if page.count < pageSize { break }
         }
-        // An empty catalog from a server that does have songs means this search form
-        // isn't supported — never wipe the cached catalog on that.
         if all.isEmpty, let status = try? await client.scanStatus(), status.count > 0 {
             throw SubsonicError.malformed
         }
-        library.mergeRemote(all, persist: true)             // the one merge + cache
-        syncedAlbumIDs = albumIDs                            // baseline for later delta pulls
-        progressText = nil
-        let jobs = idsByCover.map { (cover: $0.key, ids: $0.value) }
-        Task { @MainActor [weak self] in await self?.backfillArtwork(jobs, client: client) }
+        return (all, idsByCover)
     }
 
     /// Fetch one thumbnail per album after the catalog is already usable, and apply

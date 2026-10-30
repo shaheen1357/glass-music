@@ -121,15 +121,13 @@ final class LibraryStore: ObservableObject {
         if persist { saveRemoteCache(remote) }
     }
 
-    /// Merge newly-discovered server tracks into the catalog WITHOUT replacing it
-    /// (delta sync), deduping by id, then rebuild. Used when the server's song count
-    /// grew, so we fold in only what's new instead of walking the whole library.
-    func appendRemote(_ newTracks: [Track], persist: Bool = true) {
-        guard !newTracks.isEmpty else { return }
+    /// Fold a catalog diff in with one rebuild: append the server's new songs and drop
+    /// the ones it no longer has. Songs already held keep their fetched artwork.
+    func applyRemoteDelta(added: [Track], removedIDs: Set<String>, persist: Bool = true) {
         let known = Set(remoteTracks.map { $0.id })
-        let additions = newTracks.filter { !known.contains($0.id) }
-        guard !additions.isEmpty else { return }
-        remoteTracks.append(contentsOf: additions)
+        let additions = added.filter { !known.contains($0.id) }
+        guard !additions.isEmpty || !removedIDs.isEmpty else { return }
+        remoteTracks = remoteTracks.filter { !removedIDs.contains($0.id) } + additions
         rebuildMerged()
         if persist { saveRemoteCache(remoteTracks) }
     }
