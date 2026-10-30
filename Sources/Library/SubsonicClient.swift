@@ -598,5 +598,4 @@ enum SubsonicCache {
         else { return }
         for u in items where !isLink(u) { try? FileManager.default.removeItem(at: u) }
     }
-    }
 }

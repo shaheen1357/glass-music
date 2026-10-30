@@ -37,11 +37,18 @@ jobs:
             | grep -oE 'iPhone [0-9]+[^(]*' | head -n1 | sed 's/[[:space:]]*$//')
           echo "Testing on simulator: '${SIM_NAME:-<none found>}'"
           if [ -z "$SIM_NAME" ]; then echo "::error::No iPhone simulator available"; exit 1; fi
+          # On failure, post the compiler/test errors as one annotation: annotations are
+          # readable through the public API, the raw log needs admin rights.
           xcodebuild test \
             -project Music.xcodeproj \
             -scheme Music \
             -destination "platform=iOS Simulator,name=$SIM_NAME" \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee test.log || {
+            MSG=$(grep -E "error:|: error|Test Case .* failed|failed \(|Fatal|Thread [0-9]+ Crashed" test.log \
+                  | sort -u | head -40 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=Test step failed::${MSG:-no error lines matched; see the log}"
+            exit 1
+          }
 
       - name: Build (unsigned, device)
         run: |
