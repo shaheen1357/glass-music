@@ -9,3 +9,7 @@ Payload/
 .DS_Store
 __pycache__/
 *.pyc
+# folderlinks runtime files live on the server only (login, memory, log)
+tools/folderlinks/.env
+tools/folderlinks/state.json*
+tools/folderlinks/run.log
