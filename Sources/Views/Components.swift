@@ -179,6 +179,12 @@ struct TrackActions: View {
     @Environment(SubsonicSync.self) private var sync: SubsonicSync?
 
     var body: some View {
+        // Where this song plays from and at what quality ("Downloaded · FLAC",
+        // "Streams as MP3 320"), as a quiet line at the top of its menu.
+        if let sync, let quality = sync.qualityDescription(track) {
+            Text(quality)
+            Divider()
+        }
         if let onPlay {
             Button { onPlay() } label: { Label("Play", systemImage: "play.fill") }
         }

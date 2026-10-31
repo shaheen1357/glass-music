@@ -15,9 +15,11 @@ final class AppServices {
     let recents = RecentSearchStore()
     let subsonic = SubsonicStore()
     let sync: SubsonicSync
+    let radio: RadioStore
 
     private init() {
         sync = SubsonicSync(store: subsonic, library: library, playlists: playlists)
+        radio = RadioStore(store: subsonic)
     }
 
     // MARK: - Intent actions

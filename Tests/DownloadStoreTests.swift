@@ -83,4 +83,21 @@ final class DownloadStoreTests: XCTestCase {
         XCTAssertFalse(SubsonicCache.isDownloaded(cache))
         XCTAssertFalse(FileManager.default.fileExists(atPath: mp3.path))
     }
+
+    // A song streamed at 320/192 is kept as "<id>.mp3" in the play cache.
+    func testStreamedCopyIsFoundUnderTheSongsCacheName() throws {
+        let id = "test-\(UUID().uuidString)"
+        let cache = SubsonicCache.dir.appendingPathComponent(id + ".flac")
+        XCTAssertNil(SubsonicCache.cachedFile(for: cache))
+        let mp3 = SubsonicCache.dir.appendingPathComponent(id + ".mp3")
+        try Data([0xFF, 0xFB]).write(to: mp3)
+        XCTAssertEqual(SubsonicCache.cachedFile(for: cache)?.lastPathComponent, id + ".mp3")
+        try FileManager.default.removeItem(at: mp3)
+    }
+
+    // LRCLIB knows "Rompasso - Angetenar", not "Rompasso • Rich The Kid - Angetenar".
+    func testLyricsLookUpTheMainArtist() {
+        XCTAssertEqual(LyricsLoader.primaryArtist("Rompasso • Rich The Kid"), "Rompasso")
+        XCTAssertEqual(LyricsLoader.primaryArtist("Tame Impala"), "Tame Impala")
+    }
 }

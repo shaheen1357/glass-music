@@ -12,6 +12,7 @@ struct MusicApp: App {
     @StateObject private var recents = AppServices.shared.recents
     @State private var sync = AppServices.shared.sync
     @State private var subsonic = AppServices.shared.subsonic
+    @State private var radio = AppServices.shared.radio
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
@@ -24,6 +25,7 @@ struct MusicApp: App {
                 .environmentObject(recents)
                 .environment(sync)
                 .environment(subsonic)
+                .environment(radio)
                 .tint(Color.accentColor)
                 .task {
                     player.onPlay = { track in stats.recordPlay(track); sync.scrobble(track) }
@@ -37,6 +39,8 @@ struct MusicApp: App {
                     player.readyFileFor = { track in sync.readyFile(for: track) }
                     player.streamURLFor = { track in sync.streamURL(for: track) }
                     player.fillCache = { track in sync.fillCacheIfAllowed(track) }
+                    player.streamFormatFor = { track in sync.streamFormat(track) }
+                    LyricsLoader.serverLyrics = { track in await sync.serverLyrics(track) }
                     await library.scan()
                     // Restore the last session (paused) once the library is loaded
                     // so track IDs resolve to real files.

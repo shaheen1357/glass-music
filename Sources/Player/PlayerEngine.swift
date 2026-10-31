@@ -124,6 +124,16 @@ final class PlayerEngine {
     var fillCache: ((Track) -> Void)?
     /// True while the current song is streaming (no EQ / levelling / crossfade).
     private(set) var isStreaming = false
+    /// A radio station is playing: live, no length, no seeking.
+    private(set) var isLive = false
+    /// The song a station says it's playing right now, when it says.
+    private(set) var liveTitle: String?
+    /// What's actually playing, as a short tag for the player: "FLAC", "MP3 320",
+    /// "AAC 128"... nil when unknown.
+    private(set) var nowFormat: String?
+    /// The tag for a streamed server song ("MP3 320"); set by the app.
+    var streamFormatFor: ((Track) -> String?)?
+    @ObservationIgnored private var metadataReader: StreamMetadataReader?
     @ObservationIgnored private var streamPlayer: AVPlayer?
     @ObservationIgnored private var streamObservations: [NSKeyValueObservation] = []
     @ObservationIgnored private var streamTimeObserver: Any?
@@ -439,6 +449,11 @@ final class PlayerEngine {
         // remote one): run synchronously, exactly as before, no behaviour change.
         loadError = nil
         tearDownStream()
+        // A radio station: always live through the streaming player.
+        if track.isRadio {
+            startStream(track, url: track.url, token: token)
+            return
+        }
         // On the phone (your file, or a server song downloaded or cached): the engine, now.
         if let ready = playableFile(track) {
             isLoading = false
@@ -476,6 +491,7 @@ final class PlayerEngine {
 
     private func startCurrentResolved(_ track: Track, url: URL) {
         tearDownStream()
+        nowFormat = FormatTag.forFile(url, duration: track.duration)
         onPlay?(track)
         isSuspended = false
         needsReschedule = false
@@ -657,6 +673,7 @@ final class PlayerEngine {
     }
 
     func seek(to seconds: Double) {
+        if isLive { return }                     // a live station has nowhere to seek to
         if streamPlayer != nil, let track = streamTrack, let base = streamBaseURL {
             guard seconds.isFinite else { return }
             let target = max(0, min(seconds, max(0, duration - 1)))
@@ -777,6 +794,22 @@ final class PlayerEngine {
         p.automaticallyWaitsToMinimizeStalling = true
         streamPlayer = p
         isStreaming = true
+        isLive = track.isRadio
+        liveTitle = nil
+        nowFormat = track.isRadio ? (track.album == "Radio" ? "LIVE" : "LIVE · " + track.album)
+                                  : streamFormatFor?(track)
+        if track.isRadio {
+            // Stations send the current song as stream metadata (ICY StreamTitle).
+            let reader = StreamMetadataReader { [weak self] title in
+                guard let self, token == self.startToken else { return }
+                self.liveTitle = title
+                self.updateNowPlayingInfo()
+            }
+            let output = AVPlayerItemMetadataOutput(identifiers: nil)
+            output.setDelegate(reader, queue: .main)
+            item.add(output)
+            metadataReader = reader
+        }
         streamCacheFilled = false
         isLoading = true                         // until audio actually flows
         isPlaying = false
@@ -876,6 +909,9 @@ final class PlayerEngine {
         p.replaceCurrentItem(with: nil)
         streamPlayer = nil
         isStreaming = false
+        isLive = false
+        liveTitle = nil
+        metadataReader = nil
     }
 
     // MARK: - Track transitions (gapless / crossfade)
@@ -1238,6 +1274,7 @@ final class PlayerEngine {
         scheduleGeneration &+= 1
         do {
             let file = try AVAudioFile(forReading: fileURL)
+            nowFormat = FormatTag.forFile(fileURL, duration: track.duration)
             audioFile = file
             sampleRate = file.processingFormat.sampleRate
             audioLengthSamples = file.length
@@ -1429,8 +1466,8 @@ final class PlayerEngine {
             return
         }
         var info: [String: Any] = [
-            MPMediaItemPropertyTitle: track.title,
-            MPMediaItemPropertyArtist: track.artist,
+            MPMediaItemPropertyTitle: liveTitle ?? track.title,
+            MPMediaItemPropertyArtist: liveTitle == nil ? track.artist : track.title,
             MPMediaItemPropertyAlbumTitle: track.album,
             MPMediaItemPropertyPlaybackDuration: duration,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: currentTime,
@@ -1447,3 +1484,44 @@ final class PlayerEngine {
         MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
     }
 }
+
+/// Hands a station's "now playing" text (ICY StreamTitle, or a title tag) to a closure.
+final class StreamMetadataReader: NSObject, AVPlayerItemMetadataOutputPushDelegate {
+    private let onTitle: @MainActor (String) -> Void
+    init(onTitle: @escaping @MainActor (String) -> Void) { self.onTitle = onTitle }
+
+    func metadataOutput(_ output: AVPlayerItemMetadataOutput,
+                        didOutputTimedMetadataGroups groups: [AVTimedMetadataGroup],
+                        from track: AVPlayerItemTrack?) {
+        let items = groups.flatMap(\.items)
+        let item = items.first { $0.identifier == .icyMetadataStreamTitle }
+            ?? items.first { $0.commonKey == .commonKeyTitle }
+        guard let title = item?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !title.isEmpty else { return }
+        MainActor.assumeIsolated { onTitle(title) }
+    }
+}
+
+/// The short format tag shown in the player and the song menu.
+enum FormatTag {
+    /// From the file itself: its type, and for lossy files the bitrate worked out
+    /// from size and length, snapped to the usual steps (320, 256, 192, 160, 128).
+    static func forFile(_ url: URL, duration: Double) -> String? {
+        let ext = url.pathExtension.lowercased()
+        switch ext {
+        case "flac": return "FLAC"
+        case "wav", "aif", "aiff", "caf": return ext == "wav" ? "WAV" : "AIFF"
+        case "alac": return "ALAC"
+        default: break
+        }
+        let name = ext == "mp3" ? "MP3" : (["m4a", "aac", "m4b"].contains(ext) ? "AAC" : ext.uppercased())
+        guard duration > 0,
+              let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize else { return name }
+        let kbps = Double(size) * 8 / duration / 1000
+        if ext == "m4a", kbps > 500 { return "ALAC" }       // lossless in an .m4a
+        let steps = [320, 256, 192, 160, 128, 96, 64]
+        let snapped = steps.min { abs(Double($0) - kbps) < abs(Double($1) - kbps) } ?? Int(kbps)
+        return "\(name) \(abs(Double(snapped) - kbps) / kbps < 0.12 ? snapped : Int(kbps.rounded()))"
+    }
+}
+

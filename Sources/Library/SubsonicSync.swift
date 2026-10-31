@@ -579,7 +579,7 @@ final class SubsonicSync {
             if failedIDs.contains(sid) { return .failed }
             if queuedIDs.contains(sid) { return isWaitingForWiFi(sid) ? .waiting : .downloading }
         }
-        return SubsonicCache.isCached(cacheURL) ? .cached : .streams
+        return SubsonicCache.cachedFile(for: cacheURL) != nil ? .cached : .streams
     }
 
     /// Fraction downloaded so far for a song being downloaded for offline, else nil.
@@ -876,8 +876,7 @@ final class SubsonicSync {
             SubsonicCache.link(u)                    // for everything that checks the cache path
             return SubsonicCache.downloadedFile(for: u)
         }
-        if SubsonicCache.isLink(u) { return nil }    // a link to a download that's gone
-        return SubsonicCache.isCached(u) ? u : nil
+        return SubsonicCache.cachedFile(for: u)      // original, or the copy kept from streaming
     }
 
     /// Where to stream a server song from, converted to MP3 at the chosen bitrate. nil
@@ -891,11 +890,68 @@ final class SubsonicSync {
     /// A streamed song's whole file into the cache, so its next play gets the engine.
     /// That is a second fetch of the same song, so only on Wi-Fi (or with Sync on
     /// Mobile Data on); on mobile data the stream alone is the cost.
+    /// Keep a copy of a song once it has streamed, at the streaming quality, so the
+    /// next play is instant, works offline and gets the full engine. It's a second
+    /// fetch of the song (AVPlayer's own bytes can't be kept), so on mobile data only
+    /// when Sync on Mobile Data is on. Kept in the play cache (2 GB, oldest out first).
     func fillCacheIfAllowed(_ track: Track) {
-        // A converted stream was chosen to save data; fetching the FLAC behind it as
-        // well would undo that. Songs you want with full effects: download them.
-        guard streamQuality == .original, !net.isCellular || useMobileData else { return }
-        Task { _ = await ensureLocal(track) }
+        guard !net.isCellular || useMobileData else { return }
+        guard let rate = streamQuality.bitRate else {
+            Task { _ = await ensureLocal(track) }    // Original: the whole file
+            return
+        }
+        guard let client = store.client, let sid = SubsonicID.serverID(for: track),
+              readyFile(for: track) == nil else { return }
+        Task {
+            guard let url = try? await SubsonicCache.ensureCached(
+                id: sid, suffix: "mp3", using: client, maxBitRate: rate, format: "mp3") else { return }
+            addDataUsed((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+            trimCache()
+            cacheVersion &+= 1
+        }
+    }
+
+    /// Lyrics from the server for a streamed song (Navidrome reads the file's tags or a
+    /// .lrc beside it). nil on a network error, so a miss is only cached when the server
+    /// actually answered.
+    func serverLyrics(_ track: Track) async -> LyricsLoader.Fetched? {
+        guard let client = store.client, let sid = SubsonicID.serverID(for: track),
+              let list = try? await client.lyrics(songID: sid) else { return nil }
+        let synced = list.first { $0.synced == true && !($0.line ?? []).isEmpty }
+        let plain = list.first { $0.synced != true && !($0.line ?? []).isEmpty } ?? synced
+        func lrc(_ l: SubStructuredLyrics) -> String {
+            let off = l.offset ?? 0
+            return (l.line ?? []).map { line in
+                let ms = max(0, (line.start ?? 0) + off)
+                return String(format: "[%02ld:%02ld.%02ld]", ms / 60000, (ms / 1000) % 60, (ms % 1000) / 10)
+                    + (line.value ?? "")
+            }.joined(separator: "\n")
+        }
+        let plainText = plain.map { ($0.line ?? []).compactMap(\.value).joined(separator: "\n") }
+        return LyricsLoader.Fetched(synced: synced.map(lrc), plain: plainText)
+    }
+
+    // MARK: - Quality, as the listener sees it
+    /// The tag the player shows for a streamed server song.
+    func streamFormat(_ track: Track) -> String? { streamQuality.bitRate.map { "MP3 \($0)" } }
+
+    /// One line for a song's menu: where it plays from and at what quality.
+    func qualityDescription(_ track: Track) -> String? {
+        if track.isRadio { return nil }
+        if !SubsonicID.isRemote(track) {
+            return FormatTag.forFile(track.url, duration: track.duration).map { "\($0) · on this phone" }
+        }
+        let u = SubsonicCache.currentURL(for: track.url)
+        if SubsonicCache.isDownloaded(u) {
+            return FormatTag.forFile(SubsonicCache.downloadedFile(for: u), duration: track.duration)
+                .map { "Downloaded · \($0)" }
+        }
+        if let c = SubsonicCache.cachedFile(for: u) {
+            return FormatTag.forFile(c, duration: track.duration).map { "Cached · \($0)" }
+        }
+        if let rate = streamQuality.bitRate { return "Streams as MP3 \(rate)" }
+        let original = FormatTag.forFile(track.url, duration: 0) ?? "original"
+        return "Streams as \(original) · whole file first"
     }
 
     // MARK: - Playback seam + scrobble

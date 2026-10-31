@@ -142,6 +142,44 @@ struct SubsonicClient: Sendable {
         return body.searchResult3?.song ?? []
     }
 
+    /// Lyrics Navidrome holds for a song (from its tags or a .lrc beside it on the
+    /// server): OpenSubsonic getLyricsBySongId. Synced lines carry a start in ms.
+    func lyrics(songID: String) async throws -> [SubStructuredLyrics] {
+        let body = try await get(SubEnvelope<LyricsBody>.self, "getLyricsBySongId",
+                                 [URLQueryItem(name: "id", value: songID)]).response
+        try check(body.status, body.error)
+        return body.lyricsList?.structuredLyrics ?? []
+    }
+
+    // MARK: - Internet radio (Navidrome keeps the list; creating/editing needs admin)
+    func radioStations() async throws -> [SubRadioStation] {
+        let body = try await get(SubEnvelope<RadioBody>.self, "getInternetRadioStations", []).response
+        try check(body.status, body.error)
+        return body.internetRadioStations?.internetRadioStation ?? []
+    }
+
+    func createRadioStation(name: String, streamURL: URL, homepage: URL?) async throws {
+        var items = [URLQueryItem(name: "name", value: name),
+                     URLQueryItem(name: "streamUrl", value: streamURL.absoluteString)]
+        if let homepage { items.append(URLQueryItem(name: "homepageUrl", value: homepage.absoluteString)) }
+        let body = try await get(SubEnvelope<StatusBody>.self, "createInternetRadioStation", items).response
+        try check(body.status, body.error)
+    }
+
+    func updateRadioStation(id: String, name: String, streamURL: URL, homepage: URL?) async throws {
+        var items = [URLQueryItem(name: "id", value: id), URLQueryItem(name: "name", value: name),
+                     URLQueryItem(name: "streamUrl", value: streamURL.absoluteString)]
+        if let homepage { items.append(URLQueryItem(name: "homepageUrl", value: homepage.absoluteString)) }
+        let body = try await get(SubEnvelope<StatusBody>.self, "updateInternetRadioStation", items).response
+        try check(body.status, body.error)
+    }
+
+    func deleteRadioStation(id: String) async throws {
+        let body = try await get(SubEnvelope<StatusBody>.self, "deleteInternetRadioStation",
+                                 [URLQueryItem(name: "id", value: id)]).response
+        try check(body.status, body.error)
+    }
+
     func scrobble(id: String, submission: Bool = true) async throws {
         let items = [URLQueryItem(name: "id", value: id),
                      URLQueryItem(name: "submission", value: submission ? "true" : "false")]
@@ -240,6 +278,30 @@ struct SubEnvelope<Body: Decodable>: Decodable {
 struct SubApiError: Decodable { let code: Int; let message: String? }
 
 struct StatusBody: Decodable { let status: String?; let error: SubApiError? }
+
+struct RadioBody: Decodable {
+    let status: String?; let error: SubApiError?
+    let internetRadioStations: SubRadioList?
+}
+struct SubRadioList: Decodable { let internetRadioStation: [SubRadioStation]? }
+struct SubRadioStation: Decodable {
+    let id: String
+    let name: String?
+    let streamUrl: String?
+    let homePageUrl: String?
+}
+
+struct LyricsBody: Decodable {
+    let status: String?; let error: SubApiError?
+    let lyricsList: SubLyricsList?
+}
+struct SubLyricsList: Decodable { let structuredLyrics: [SubStructuredLyrics]? }
+struct SubStructuredLyrics: Decodable {
+    let synced: Bool?
+    let offset: Int?
+    let line: [SubLyricLine]?
+}
+struct SubLyricLine: Decodable { let start: Int?; let value: String? }
 
 struct ArtistsBody: Decodable {
     let status: String?; let error: SubApiError?
@@ -582,6 +644,15 @@ enum SubsonicCache {
         let fm = FileManager.default
         return fm.fileExists(atPath: downloadsDir.appendingPathComponent(cacheURL.lastPathComponent).path)
             || fm.fileExists(atPath: convertedDownload(for: cacheURL).path)
+    }
+
+    /// The play-cache copy of a song, if any: the original under the song's own name,
+    /// or a converted copy ("<id>.mp3") kept from streaming at 320 / 192.
+    static func cachedFile(for cacheURL: URL) -> URL? {
+        let fm = FileManager.default
+        if !isLink(cacheURL), fm.fileExists(atPath: cacheURL.path) { return cacheURL }
+        let mp3 = cacheURL.deletingPathExtension().appendingPathExtension("mp3")
+        return fm.fileExists(atPath: mp3.path) ? mp3 : nil
     }
 
     static func isLink(_ url: URL) -> Bool {

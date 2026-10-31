@@ -28,6 +28,7 @@ struct RootView: View {
         TabView(selection: $selection) {
             Tab("Home", systemImage: "house.fill", value: 0) { HomeView() }
             Tab("Library", systemImage: "square.stack.fill", value: 1) { LibraryView() }
+            Tab("Radio", systemImage: "dot.radiowaves.left.and.right", value: 3) { RadioView() }
             Tab("Search", systemImage: "magnifyingglass", value: 2) { SearchView() }
         }
     }

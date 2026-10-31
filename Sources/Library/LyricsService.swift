@@ -18,6 +18,16 @@ enum LyricsResult {
 /// players; results (including misses) are cached so we hit the network at most
 /// once per track and the karaoke view works offline afterwards.
 enum LyricsLoader {
+    /// Lyrics from the music server for a server song; set by the app.
+    static var serverLyrics: ((Track) async -> Fetched?)?
+
+    /// Navidrome joins several artists as "A • B"; LRCLIB knows the song under "A".
+    static func primaryArtist(_ artist: String) -> String {
+        let first = artist.components(separatedBy: " • ").first ?? artist
+        let t = first.trimmingCharacters(in: .whitespaces)
+        return t.isEmpty ? artist : t
+    }
+
     static func sidecarURL(for track: Track) -> URL {
         track.url.deletingPathExtension().appendingPathExtension("lrc")
     }
@@ -28,16 +38,29 @@ enum LyricsLoader {
             let lines = parse(content)
             if !lines.isEmpty { return .synced(lines) }
         }
+        // 1b. A server song: what the server holds (often the same tags a local copy
+        // would have). Synced wins straight away; plain is kept as a fallback below.
+        var server: Fetched?
+        if SubsonicID.isRemote(track) {
+            server = serverCacheRead(track)
+            if server == nil, let fetched = await serverLyrics?(track) {
+                serverCacheWrite(track, fetched)
+                server = fetched
+            }
+            if let syn = server?.synced.map(parse), !syn.isEmpty { return .synced(syn) }
+        }
+        let serverPlain = nonEmpty(server?.plain)
         // 2. Cached LRCLIB result (respects a cached "miss" — no refetch).
         if let cached = cacheRead(track) {
             if let syn = cached.synced.map(parse), !syn.isEmpty { return .synced(syn) }
-            if let p = cached.plain ?? nonEmpty(track.lyrics) { return .plain(p) }
+            if let p = cached.plain ?? serverPlain ?? nonEmpty(track.lyrics) { return .plain(p) }
         } else if let fetched = await fetchLRCLib(track) {
             // 3. Network fetch (only when we have no cache entry yet).
             cacheWrite(track, fetched)
             if let syn = fetched.synced.map(parse), !syn.isEmpty { return .synced(syn) }
-            if let p = fetched.plain ?? nonEmpty(track.lyrics) { return .plain(p) }
+            if let p = fetched.plain ?? serverPlain ?? nonEmpty(track.lyrics) { return .plain(p) }
         }
+        if let p = serverPlain { return .plain(p) }
         // 4. Embedded lyrics from the file's tags (synced if LRC-timed, else plain).
         if let embedded = nonEmpty(track.lyrics) {
             let lines = parse(embedded)
@@ -97,7 +120,7 @@ enum LyricsLoader {
         guard track.artist != "Unknown Artist", !track.artist.isEmpty, !track.title.isEmpty else { return nil }
         guard var comps = URLComponents(string: "https://lrclib.net/api/get") else { return nil }
         comps.queryItems = [
-            URLQueryItem(name: "artist_name", value: track.artist),
+            URLQueryItem(name: "artist_name", value: primaryArtist(track.artist)),
             URLQueryItem(name: "track_name", value: track.title),
             URLQueryItem(name: "album_name", value: track.album),
             URLQueryItem(name: "duration", value: String(Int(track.duration.rounded())))
@@ -127,7 +150,10 @@ enum LyricsLoader {
     }
 
     private static func cacheKey(_ track: Track) -> String {
-        let raw = "\(track.artist)-\(track.title)-\(track.album)-\(Int(track.duration.rounded()))".lowercased()
+        // Keyed on the main artist: a song filed under "A • B" was looked up (and its
+        // miss cached) under the joined name, which LRCLIB never matches. The new key
+        // lets those songs be looked up again, correctly.
+        let raw = "\(primaryArtist(track.artist))-\(track.title)-\(track.album)-\(Int(track.duration.rounded()))".lowercased()
         let safe = raw.map { ($0.isLetter || $0.isNumber) ? $0 : "_" }
         return String(String(safe).prefix(120))
     }
@@ -136,6 +162,25 @@ enum LyricsLoader {
         let url = cacheDir.appendingPathComponent(cacheKey(track) + ".json")
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(CacheEntry.self, from: data)
+    }
+
+    // Server lyrics, cached per server song so the lyrics view works offline.
+    private static func serverCacheURL(_ track: Track) -> URL? {
+        SubsonicID.serverID(for: track).map {
+            cacheDir.appendingPathComponent("server-" + SubsonicCache.stem($0) + ".json")
+        }
+    }
+
+    private static func serverCacheRead(_ track: Track) -> Fetched? {
+        guard let url = serverCacheURL(track), let data = try? Data(contentsOf: url),
+              let e = try? JSONDecoder().decode(CacheEntry.self, from: data) else { return nil }
+        return Fetched(synced: e.synced, plain: e.plain)
+    }
+
+    private static func serverCacheWrite(_ track: Track, _ f: Fetched) {
+        guard let url = serverCacheURL(track),
+              let data = try? JSONEncoder().encode(CacheEntry(synced: f.synced, plain: f.plain)) else { return }
+        try? data.write(to: url, options: .atomic)
     }
 
     private static func cacheWrite(_ track: Track, _ f: Fetched) {

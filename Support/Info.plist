@@ -24,6 +24,13 @@
     <array>
         <string>UIInterfaceOrientationPortrait</string>
     </array>
+    <!-- Many radio stations still stream over plain http://. Allow it for media
+         (audio/video playback) only; everything else stays HTTPS. -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoadsForMedia</key>
+        <true/>
+    </dict>
     <key>UIBackgroundModes</key>
     <array>
         <string>audio</string>

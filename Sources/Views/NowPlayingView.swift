@@ -95,24 +95,53 @@ private struct ProgressScrubber: View {
 
     var body: some View {
         VStack(spacing: 4) {
-            Slider(value: $scrub, in: 0...max(player.duration, 0.1),
-                   onEditingChanged: { editing in
-                       isScrubbing = editing
-                       if !editing { player.seek(to: scrub) }
-                   })
-            .tint(.white)
-            HStack {
-                Text(formatTime(scrub))
-                Spacer()
-                Text("-" + formatTime(max(0, player.duration - scrub)))
+            if player.isLive {
+                // A station has no length: no bar to drag, just what's on and how.
+                Capsule().fill(.white.opacity(0.18)).frame(height: 4)
+                    .padding(.vertical, 12)
+                HStack {
+                    Spacer()
+                    FormatTagView(text: player.nowFormat ?? "LIVE")
+                    Spacer()
+                }
+            } else {
+                Slider(value: $scrub, in: 0...max(player.duration, 0.1),
+                       onEditingChanged: { editing in
+                           isScrubbing = editing
+                           if !editing { player.seek(to: scrub) }
+                       })
+                .tint(.white)
+                HStack {
+                    Text(formatTime(scrub))
+                    Spacer()
+                    // Apple-Music style: the format sits between the times.
+                    if let tag = player.nowFormat { FormatTagView(text: tag) }
+                    Spacer()
+                    Text("-" + formatTime(max(0, player.duration - scrub)))
+                }
             }
-            .font(.caption)
-            .foregroundStyle(.white.opacity(0.65))
         }
+        .font(.caption)
+        .foregroundStyle(.white.opacity(0.65))
         .onAppear { scrub = player.currentTime }
         .onChange(of: player.currentTime) { _, newValue in
             if !isScrubbing { scrub = newValue }
         }
+    }
+}
+
+/// The small format tag in the full player ("FLAC", "MP3 320", "LIVE · AAC 128"):
+/// the same frosted white as the player's round buttons, so it reads as part of it.
+struct FormatTagView: View {
+    let text: String
+    var body: some View {
+        Text(text)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.white.opacity(0.85))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(.white.opacity(0.18), in: Capsule())
+            .accessibilityLabel("Playing as \(text)")
     }
 }
 
@@ -271,9 +300,10 @@ struct NowPlayingView: View {
     private var trackInfo: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(player.currentTrack?.title ?? "")
+                // A station: the song on air on top, the station beneath, once it says.
+                Text(player.liveTitle ?? player.currentTrack?.title ?? "")
                     .font(.title2.bold()).foregroundStyle(.white).lineLimit(1)
-                Text(player.currentTrack?.artist ?? "")
+                Text(player.liveTitle != nil ? (player.currentTrack?.title ?? "") : (player.currentTrack?.artist ?? ""))
                     .font(.title3).foregroundStyle(.white.opacity(0.7)).lineLimit(1)
             }
             Spacer()

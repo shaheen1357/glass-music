@@ -199,7 +199,7 @@ final class LibraryStore: ObservableObject {
         for r in remoteTracks where !twinIDs.contains(r.id)
             && !localKeys.contains(r.contentKey) && !localLoose.contains(r.looseKey) {
             // Offline (by choice or no connection) hides server tracks not on the device.
-            if effectiveOffline && !SubsonicCache.isDownloaded(r.url) && !SubsonicCache.isCached(r.url) { continue }
+            if effectiveOffline && !SubsonicCache.isDownloaded(r.url) && SubsonicCache.cachedFile(for: r.url) == nil { continue }
             merged.append(r)
         }
         merged.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }

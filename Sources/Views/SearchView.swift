@@ -4,6 +4,7 @@ struct SearchView: View {
     @EnvironmentObject var library: LibraryStore
     @Environment(PlayerEngine.self) private var player
     @EnvironmentObject var recents: RecentSearchStore
+    @Environment(RadioStore.self) private var radio
     @State private var query = ""
 
     private var trimmed: String { query.trimmingCharacters(in: .whitespaces) }
@@ -22,6 +23,15 @@ struct SearchView: View {
             $0.album.lowercased().contains(q)
         }
         return hits.filter { !SubsonicID.isRemote($0) } + hits.filter { SubsonicID.isRemote($0) }
+    }
+
+    // Your saved radio stations that match, by name or by place / genre.
+    private var stationResults: [RadioStation] {
+        let q = trimmed
+        guard !q.isEmpty else { return [] }
+        return radio.saved.filter {
+            $0.name.localizedCaseInsensitiveContains(q) || $0.subtitle.localizedCaseInsensitiveContains(q)
+        }
     }
 
     private var resolvedRecents: [ResolvedRecent] { library.resolve(recents.items) }
@@ -46,7 +56,11 @@ struct SearchView: View {
         NavigationStack {
             Group {
                 if !trimmed.isEmpty {
-                    if results.isEmpty { ContentUnavailableView.search(text: query) } else { resultsList }
+                    if results.isEmpty && stationResults.isEmpty {
+                        ContentUnavailableView.search(text: query)
+                    } else {
+                        resultsList
+                    }
                 } else if !resolvedRecents.isEmpty {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 22) { recentSearches; browse }
@@ -57,7 +71,7 @@ struct SearchView: View {
                 }
             }
             .navigationTitle("Search")
-            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Songs")
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Songs and stations")
             .onSubmit(of: .search) {
                 if !trimmed.isEmpty { recents.add(.query(text: trimmed)) }
             }
@@ -66,11 +80,24 @@ struct SearchView: View {
 
     private var resultsList: some View {
         List {
-            ForEach(Array(results.enumerated()), id: \.element.id) { index, track in
-                TrackRow(track: track, onPlay: {
-                    player.play(tracks: results, startAt: index)
-                    recents.add(.track(id: track.id))
-                })
+            // Saved stations first (there are few, and a station name is specific),
+            // then songs. Headers only when both kinds are present.
+            if !stationResults.isEmpty {
+                Section {
+                    ForEach(stationResults) { StationRow(station: $0) }
+                } header: {
+                    if !results.isEmpty { Text("Your Stations") }
+                }
+            }
+            Section {
+                ForEach(Array(results.enumerated()), id: \.element.id) { index, track in
+                    TrackRow(track: track, onPlay: {
+                        player.play(tracks: results, startAt: index)
+                        recents.add(.track(id: track.id))
+                    })
+                }
+            } header: {
+                if !stationResults.isEmpty && !results.isEmpty { Text("Songs") }
             }
         }
         .listStyle(.plain)
