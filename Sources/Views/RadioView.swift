@@ -178,11 +178,15 @@ private struct StationTile: View {
 
     var body: some View {
         Button { RadioPlayback.play(station, player: player) } label: {
+            // Same tile as Home's shelves: 150pt art, 8pt corners, name then a caption.
             VStack(alignment: .leading, spacing: 6) {
-                StationArt(station: station, corner: 8).frame(width: 130, height: 130)
-                Text(station.name).font(.subheadline.weight(.medium)).lineLimit(1)
+                StationArt(station: station, corner: 8).frame(width: 150, height: 150)
+                Text(station.name).font(.subheadline).lineLimit(1)
                     .foregroundStyle(.primary)
-                    .frame(width: 130, alignment: .leading)
+                    .frame(width: 150, alignment: .leading)
+                Text(station.subtitle.isEmpty ? "Radio" : station.subtitle)
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .frame(width: 150, alignment: .leading)
             }
         }
         .buttonStyle(.plain)
