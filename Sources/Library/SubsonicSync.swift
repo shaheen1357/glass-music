@@ -931,6 +931,15 @@ final class SubsonicSync {
         return LyricsLoader.Fetched(synced: synced.map(lrc), plain: plainText)
     }
 
+    /// Can this song start right now? Your own files and anything downloaded or cached
+    /// always can; a song only on the server needs a connection.
+    func canPlayNow(_ track: Track) -> Bool {
+        if track.isRadio || SubsonicID.isRemote(track) {
+            return readyFile(for: track) != nil || !library.effectiveOffline
+        }
+        return true
+    }
+
     // MARK: - Quality, as the listener sees it
     /// The tag the player shows for a streamed server song.
     func streamFormat(_ track: Track) -> String? { streamQuality.bitRate.map { "MP3 \($0)" } }

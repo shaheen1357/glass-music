@@ -256,10 +256,17 @@ struct TrackRow: View {
 
     private var isCurrent: Bool { player.currentTrack?.id == track.id }
     private var isPending: Bool { track.isPending }
+    /// Offline and only on the server: listed with its details, greyed, and a tap
+    /// explains instead of failing silently.
+    private var isUnavailable: Bool { !isPending && sync?.canPlayNow(track) == false }
+    @State private var showOffline = false
 
     var body: some View {
         HStack(spacing: 8) {
-            Button { if !isPending { onPlay?() } } label: {
+            Button {
+                if isUnavailable { showOffline = true }
+                else if !isPending { onPlay?() }
+            } label: {
                 HStack(spacing: 12) {
                     if showArtwork {
                         ArtworkView(id: track.id, data: track.artworkData, corner: 6).frame(width: 48, height: 48)
@@ -286,7 +293,7 @@ struct TrackRow: View {
                     }
                 }
                 .contentShape(Rectangle())
-                .opacity(isPending ? 0.5 : 1)
+                .opacity(isPending || isUnavailable ? 0.5 : 1)
             }
             .buttonStyle(.plain)
             .disabled(isPending)
@@ -302,6 +309,11 @@ struct TrackRow: View {
         }
         .sheet(isPresented: $showAdd) {
             AddToPlaylistView(track: track).environmentObject(playlists)
+        }
+        .alert("You're Offline", isPresented: $showOffline) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Go online to play “\(track.title)”. Songs you download play anywhere.")
         }
     }
 

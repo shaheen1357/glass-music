@@ -495,10 +495,9 @@ final class PlaylistStore: ObservableObject {
         // since the merged index prefers it.
         if let m = playlist.trackMeta?[id], let t = library.trackByLooseKey[m.looseKey] { return t }
         if let t = library.tracksByID[id] { return t }
-        // Not resolvable to a real source. Online, keep the song visible as a
-        // placeholder built from its stored metadata (pending upload / schema-only);
-        // offline, hide it so a playlist shows only what actually plays.
-        if !library.effectiveOffline, let m = playlist.trackMeta?[id] {
+        // Not resolvable to a real source: keep the song visible as a placeholder built
+        // from its stored metadata, online or off — a playlist always shows all its songs.
+        if let m = playlist.trackMeta?[id] {
             return Track(id: id, url: URL(fileURLWithPath: "/pending/\(id)"),
                          title: m.title, artist: m.artist, album: m.album,
                          trackNumber: 0, duration: m.duration, artworkData: nil,

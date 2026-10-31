@@ -133,6 +133,8 @@ final class PlayerEngine {
     private(set) var nowFormat: String?
     /// The tag for a streamed server song ("MP3 320"); set by the app.
     var streamFormatFor: ((Track) -> String?)?
+    /// True when there's no way to reach the server (no connection, or Offline Mode).
+    var isOfflineNow: (() -> Bool)?
     @ObservationIgnored private var metadataReader: StreamMetadataReader?
     @ObservationIgnored private var streamPlayer: AVPlayer?
     @ObservationIgnored private var streamObservations: [NSKeyValueObservation] = []
@@ -460,12 +462,41 @@ final class PlayerEngine {
             startCurrentResolved(track, url: ready)
             return
         }
+        // Offline and only on the server: skip ahead to the next song that can play,
+        // the way a greyed-out song is passed over, rather than stalling on it.
+        if isOfflineNow?() == true {
+            skipToPlayable(after: currentIndex)
+            return
+        }
         // Not on the phone: stream it, starting in seconds.
         if SubsonicID.isRemote(track), let url = streamURLFor?(track) {
             startStream(track, url: url, token: token)
             return
         }
         fetchThenPlay(track, token: token)
+    }
+
+    /// Offline: from the queue position after `index`, play the first song that's on
+    /// the phone. If none is, stop and say why.
+    private func skipToPlayable(after index: Int) {
+        guard !queue.isEmpty else { return }
+        for step in 1...queue.count {
+            let i = index + step
+            guard i < queue.count || repeatMode == .all else { break }
+            let j = i % queue.count
+            if j == index { break }
+            let t = queue[j]
+            if !t.isRadio && playableFile(t) != nil {
+                currentIndex = j
+                startCurrent()
+                return
+            }
+        }
+        isLoading = false
+        isPlaying = false
+        stopDisplayTimer()
+        loadError = "You're offline, and nothing else in this queue is on the phone."
+        updateNowPlayingInfo()
     }
 
     /// The whole-file path: fetch the song, then hand it to the engine — unless a newer

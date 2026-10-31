@@ -125,7 +125,7 @@ struct SettingsView: View {
                             Label("Offline Mode", systemImage: "wifi.slash")
                         }
                         if !library.isOnline {
-                            Text("No connection — showing only songs on this device.")
+                            Text("No connection — songs not on this phone are greyed out until you’re back online.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         Toggle(isOn: Binding(get: { sync.useMobileData },

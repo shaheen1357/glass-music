@@ -40,6 +40,7 @@ struct MusicApp: App {
                     player.streamURLFor = { track in sync.streamURL(for: track) }
                     player.fillCache = { track in sync.fillCacheIfAllowed(track) }
                     player.streamFormatFor = { track in sync.streamFormat(track) }
+                    player.isOfflineNow = { library.effectiveOffline }
                     LyricsLoader.serverLyrics = { track in await sync.serverLyrics(track) }
                     await library.scan()
                     // Restore the last session (paused) once the library is loaded

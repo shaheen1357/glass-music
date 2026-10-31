@@ -199,7 +199,8 @@ final class LibraryStore: ObservableObject {
         for r in remoteTracks where !twinIDs.contains(r.id)
             && !localKeys.contains(r.contentKey) && !localLoose.contains(r.looseKey) {
             // Offline (by choice or no connection) hides server tracks not on the device.
-            if effectiveOffline && !SubsonicCache.isDownloaded(r.url) && SubsonicCache.cachedFile(for: r.url) == nil { continue }
+            // Offline, every song stays listed with its details; ones that can't play
+            // without the server are greyed out by the row instead (SubsonicSync.canPlayNow).
             merged.append(r)
         }
         merged.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }

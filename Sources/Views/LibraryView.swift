@@ -405,6 +405,7 @@ struct AlbumDetailView: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .opacity(sync?.canPlayNow(track) == false ? 0.5 : 1)   // offline, server-only
                         OfflineBadge(track: track)
                         Menu {
                             TrackActions(track: track,
