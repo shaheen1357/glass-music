@@ -129,6 +129,11 @@ final class PlayerEngine {
     @ObservationIgnored private var streamTimeObserver: Any?
     @ObservationIgnored private var streamEndObserver: NSObjectProtocol?
     @ObservationIgnored private var streamCacheFilled = false
+    /// A converted stream can't jump to a byte, so a seek restarts it from a time
+    /// (Navidrome's timeOffset). The stream's own clock then counts from that point.
+    @ObservationIgnored private var streamBaseURL: URL?
+    @ObservationIgnored private var streamTrack: Track?
+    @ObservationIgnored private var streamOffset: Double = 0
 
     // MARK: Session persistence (last song + position + shuffle/repeat + queue)
     private struct PersistedState: Codable {
@@ -434,13 +439,8 @@ final class PlayerEngine {
         // remote one): run synchronously, exactly as before, no behaviour change.
         loadError = nil
         tearDownStream()
-        if !SubsonicID.isRemote(track), FileManager.default.fileExists(atPath: track.url.path) {
-            isLoading = false
-            startCurrentResolved(track, url: track.url)
-            return
-        }
-        // A server song already on the phone (downloaded or cached): the engine, now.
-        if SubsonicID.isRemote(track), let ready = readyFileFor?(track) {
+        // On the phone (your file, or a server song downloaded or cached): the engine, now.
+        if let ready = playableFile(track) {
             isLoading = false
             startCurrentResolved(track, url: ready)
             return
@@ -527,15 +527,28 @@ final class PlayerEngine {
     private func discardBrokenCopy(of track: Track, at url: URL) {
         loadError = "Couldn't play “\(track.title)”. Try again to fetch a fresh copy."
         guard SubsonicID.isRemote(track) else { return }
-        if SubsonicCache.isLink(url) { SubsonicCache.removeDownload(url) }
-        else if url.path.hasPrefix(SubsonicCache.dir.path) { try? FileManager.default.removeItem(at: url) }
+        let cacheURL = SubsonicCache.dir.appendingPathComponent(url.lastPathComponent)
+        if url.path.hasPrefix(SubsonicCache.downloadsDir.path) || SubsonicCache.isLink(url) {
+            SubsonicCache.removeDownload(cacheURL)      // the sync re-queues it
+        } else if url.path.hasPrefix(SubsonicCache.dir.path) {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    /// The real file to open for a track, or nil if it isn't on the phone. Your own
+    /// songs: their file. Server songs: asked of the sync, which answers with the
+    /// download itself (not the cache link to it) or the cached copy, under this
+    /// launch's container — never the path stored with the track.
+    private func playableFile(_ track: Track) -> URL? {
+        if SubsonicID.isRemote(track) { return readyFileFor?(track) }
+        return FileManager.default.fileExists(atPath: track.url.path) ? track.url : nil
     }
 
     /// Warm the cache for the next track so a gapless/crossfade hand-off (which
     /// opens the file synchronously) finds it on disk. No-op for local tracks.
     private func prefetchUpcoming() {
         guard let hook = ensureLocalURL, let next = upcomingTrack(),
-              !FileManager.default.fileExists(atPath: next.url.path) else { return }
+              playableFile(next) == nil else { return }
         Task { _ = await hook(next) }
     }
 
@@ -574,10 +587,8 @@ final class PlayerEngine {
         }
         switch repeatMode {
         case .one:
-            if let p = streamPlayer {
-                p.seek(to: .zero)
-                p.play()
-                currentTime = 0
+            if streamPlayer != nil, let track = streamTrack, let base = streamBaseURL {
+                startStream(track, url: base, token: startToken, offset: 0, announce: false)
                 return
             }
             seekFrame = 0
@@ -646,11 +657,18 @@ final class PlayerEngine {
     }
 
     func seek(to seconds: Double) {
-        if let p = streamPlayer {
+        if streamPlayer != nil, let track = streamTrack, let base = streamBaseURL {
             guard seconds.isFinite else { return }
-            let target = max(0, min(seconds, max(0, duration - 0.5)))
-            currentTime = target
-            p.seek(to: CMTime(seconds: target, preferredTimescale: 600))
+            let target = max(0, min(seconds, max(0, duration - 1)))
+            let wasPlaying = isPlaying
+            // Restart the converted stream from the new time; it starts in a fraction
+            // of a second (no byte ranges to seek within).
+            startStream(track, url: base, token: startToken, offset: target, announce: false)
+            if !wasPlaying {
+                streamPlayer?.pause()
+                isPlaying = false
+                isLoading = false
+            }
             refreshNowPlayingElapsed()
             return
         }
@@ -733,7 +751,9 @@ final class PlayerEngine {
     }
 
     // MARK: - Streaming
-    private func startStream(_ track: Track, url: URL, token: Int) {
+    private func startStream(_ track: Track, url: URL, token: Int,
+                             offset: Double = 0, announce: Bool = true) {
+        tearDownStream()
         // Silence the engine: the stream takes over this song.
         abortTransition()
         idleNode.stop()
@@ -744,7 +764,15 @@ final class PlayerEngine {
         stopDisplayTimer()
         activateSession()
 
-        let item = AVPlayerItem(url: url)
+        var itemURL = url
+        if offset >= 1, var c = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            c.queryItems = (c.queryItems ?? []) + [URLQueryItem(name: "timeOffset", value: String(Int(offset)))]
+            itemURL = c.url ?? url
+        }
+        streamBaseURL = url
+        streamTrack = track
+        streamOffset = offset >= 1 ? Double(Int(offset)) : 0
+        let item = AVPlayerItem(url: itemURL)
         let p = AVPlayer(playerItem: item)
         p.automaticallyWaitsToMinimizeStalling = true
         streamPlayer = p
@@ -753,7 +781,7 @@ final class PlayerEngine {
         isLoading = true                         // until audio actually flows
         isPlaying = false
         duration = track.duration
-        currentTime = 0
+        currentTime = streamOffset
 
         streamObservations = [
             item.observe(\.status, options: [.new]) { [weak self] item, _ in
@@ -771,7 +799,7 @@ final class PlayerEngine {
         ) { [weak self] t in
             MainActor.assumeIsolated {
                 guard let self, token == self.startToken, t.seconds.isFinite else { return }
-                self.currentTime = t.seconds
+                self.currentTime = self.streamOffset + t.seconds
             }
         }
         streamEndObserver = NotificationCenter.default.addObserver(
@@ -782,7 +810,7 @@ final class PlayerEngine {
                 self.trackDidEnd()
             }
         }
-        onPlay?(track)
+        if announce { onPlay?(track) }
         p.play()
         updateNowPlayingInfo()
         savePlaybackState()
@@ -792,8 +820,10 @@ final class PlayerEngine {
         guard token == startToken else { return }
         switch item.status {
         case .readyToPlay:
+            // A converted stream reports no length (or only the rest after an offset):
+            // keep the song's own duration then.
             let d = item.duration.seconds
-            if d.isFinite && d > 0 { duration = d; updateNowPlayingInfo() }
+            if streamOffset == 0, d.isFinite, d > 0 { duration = d; updateNowPlayingInfo() }
         case .failed:
             // The stream wouldn't open (format, network, server): fall back to fetching
             // the whole file and playing it through the engine, as before.
@@ -827,13 +857,11 @@ final class PlayerEngine {
     /// connection that would starve the stream you're listening to.
     private func streamBuffered(_ item: AVPlayerItem, track: Track, token: Int) {
         guard token == startToken, !streamCacheFilled else { return }
-        let total = item.duration.seconds
-        guard total.isFinite, total > 0 else { return }
+        guard duration > 0 else { return }
         let end = item.loadedTimeRanges.map { $0.timeRangeValue.end.seconds }.max() ?? 0
-        guard end >= total - 0.5 else { return }
+        guard streamOffset + end >= duration - 1 else { return }
         streamCacheFilled = true
-        fillCache?(track)
-        prefetchUpcoming()
+        fillCache?(track)                        // the sync decides (only for Original)
     }
 
     private func tearDownStream() {
@@ -911,14 +939,14 @@ final class PlayerEngine {
         guard let renderTime = playerNode.lastRenderTime, playerNode.isPlaying else { return }
         // Only hand off to a track whose file is already on disk; otherwise let the
         // plain end-of-track path advance (which downloads it) — a tiny gap at worst.
-        guard FileManager.default.fileExists(atPath: next.url.path) else { return }
+        guard let nextURL = playableFile(next) else { return }
         // Gapless needs a valid host clock for a sample-accurate join; without it,
         // do nothing and let the plain end-of-track path advance (a tiny gap). We
         // haven't touched any state yet, so the active node's completion is intact.
         if fade == 0 && !renderTime.isHostTimeValid { return }
 
         let incoming: AVAudioFile
-        do { incoming = try AVAudioFile(forReading: next.url) }
+        do { incoming = try AVAudioFile(forReading: nextURL) }
         catch { print("Transition load failed: \(error)"); return }
         guard incoming.length > 0 else { return }
 
@@ -1197,7 +1225,7 @@ final class PlayerEngine {
         guard let track = currentTrack else { return }
         // Remote track not cached yet: show it as current (paused) without loading
         // the engine; a play tap routes through startCurrent, which fetches it.
-        guard FileManager.default.fileExists(atPath: track.url.path) else {
+        guard let fileURL = playableFile(track) else {
             audioFile = nil
             duration = track.duration
             currentTime = min(max(0, seconds), track.duration)
@@ -1209,7 +1237,7 @@ final class PlayerEngine {
         playerNode.stop()
         scheduleGeneration &+= 1
         do {
-            let file = try AVAudioFile(forReading: track.url)
+            let file = try AVAudioFile(forReading: fileURL)
             audioFile = file
             sampleRate = file.processingFormat.sampleRate
             audioLengthSamples = file.length

@@ -55,4 +55,32 @@ final class DownloadStoreTests: XCTestCase {
         let old = URL(fileURLWithPath: "/var/mobile/Containers/Data/Application/OLD/Library/Caches/StreamCache/abc.flac")
         XCTAssertEqual(SubsonicCache.currentURL(for: old), SubsonicCache.dir.appendingPathComponent("abc.flac"))
     }
+
+    // Subsonic answers a bad request with a 200 and a JSON/XML body; that must never
+    // be saved as the song.
+    func testErrorBodiesAreNotAudio() {
+        let u = URL(string: "https://example.com/rest/download")!
+        func r(_ mime: String) -> URLResponse {
+            URLResponse(url: u, mimeType: mime, expectedContentLength: 10, textEncodingName: nil)
+        }
+        XCTAssertTrue(SubsonicCache.looksLikeAudio(r("audio/flac")))
+        XCTAssertTrue(SubsonicCache.looksLikeAudio(r("application/octet-stream")))
+        XCTAssertFalse(SubsonicCache.looksLikeAudio(r("application/json")))
+        XCTAssertFalse(SubsonicCache.looksLikeAudio(r("text/xml")))
+    }
+
+    // Download Quality 320/192 saves "<id>.mp3"; the song still looks up as "<id>.flac".
+    func testConvertedDownloadIsFoundUnderTheSongsCacheName() throws {
+        let id = "test-\(UUID().uuidString)"
+        let cache = SubsonicCache.dir.appendingPathComponent(id + ".flac")
+        let mp3 = SubsonicCache.downloadsDir.appendingPathComponent(id + ".mp3")
+        try Data([0xFF, 0xFB]).write(to: mp3)
+
+        XCTAssertTrue(SubsonicCache.isDownloaded(cache))
+        XCTAssertEqual(SubsonicCache.downloadedFile(for: cache).lastPathComponent, id + ".mp3")
+
+        SubsonicCache.removeDownload(cache)
+        XCTAssertFalse(SubsonicCache.isDownloaded(cache))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: mp3.path))
+    }
 }

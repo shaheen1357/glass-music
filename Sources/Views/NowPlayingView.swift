@@ -296,22 +296,16 @@ struct NowPlayingView: View {
             Button { Haptics.tap(.medium); player.togglePlayPause() } label: {
                 if player.isLoading {
                     ProgressView().controlSize(.large).frame(width: 54, height: 54)
+                } else if player.loadError != nil {
+                    // Same signal as the mini player: tap to try again.
+                    Image(systemName: "exclamationmark.circle").font(.system(size: 54)).foregroundStyle(.red)
                 } else {
                     Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.system(size: 54))
                 }
             }
-            .accessibilityLabel(player.isLoading ? "Loading" : player.isPlaying ? "Pause" : "Play")
-            .overlay(alignment: .bottom) {
-                if let err = player.loadError {
-                    Text(err).font(.caption).foregroundStyle(.red).multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(width: 260).offset(y: 44)
-                } else if player.isStreaming {
-                    Text("Streaming · EQ and crossfade from the next play")
-                        .font(.caption2).foregroundStyle(.secondary)
-                        .frame(width: 260).offset(y: 44)
-                }
-            }
+            .accessibilityLabel(player.isLoading ? "Loading"
+                                : player.loadError != nil ? (player.loadError ?? "Couldn't play")
+                                : player.isPlaying ? "Pause" : "Play")
             Spacer()
             Button { Haptics.tap(); player.next() } label: { Image(systemName: "forward.fill").font(.title) }
                 .accessibilityLabel("Next")

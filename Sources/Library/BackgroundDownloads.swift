@@ -60,7 +60,11 @@ final class BackgroundDownloads: NSObject, URLSessionDownloadDelegate {
     func pause() { session.getAllTasks { $0.forEach { $0.suspend() } } }
     func resume() { session.getAllTasks { $0.forEach { $0.resume() } } }
 
-    func enqueue(id: String, fileName: String, url: URL, allowCellular: Bool) {
+    /// `fileName` is what the download is saved as; `cacheName` is the song's usual
+    /// cache file name, linked to it. A converted stream sends no length, so
+    /// `expectedBytes` (duration x bitrate) drives its progress ring instead.
+    func enqueue(id: String, fileName: String, cacheName: String, expectedBytes: Int64,
+                 url: URL, allowCellular: Bool) {
         lock.lock()
         let already = active.contains(id)
         if !already { active.insert(id) }
@@ -69,7 +73,7 @@ final class BackgroundDownloads: NSObject, URLSessionDownloadDelegate {
         var r = URLRequest(url: url)
         r.allowsCellularAccess = allowCellular  // false: the task waits for Wi-Fi
         let t = session.downloadTask(with: r)
-        t.taskDescription = "\(id)\t\(fileName)"
+        t.taskDescription = "\(id)\t\(fileName)\t\(cacheName)\t\(expectedBytes)"
         t.resume()
     }
 
@@ -92,17 +96,21 @@ final class BackgroundDownloads: NSObject, URLSessionDownloadDelegate {
         session.getAllTasks { $0.forEach { $0.cancel() } }
     }
 
-    private static func parse(_ t: URLSessionTask) -> (id: String, fileName: String)? {
-        let parts = (t.taskDescription ?? "").split(separator: "\t", maxSplits: 1).map(String.init)
-        return parts.count == 2 ? (parts[0], parts[1]) : nil
+    private static func parse(_ t: URLSessionTask)
+        -> (id: String, fileName: String, cacheName: String, expected: Int64)? {
+        let p = (t.taskDescription ?? "").split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+        guard p.count >= 2 else { return nil }
+        return (p[0], p[1], p.count > 2 ? p[2] : p[1], p.count > 3 ? Int64(p[3]) ?? 0 : 0)
     }
 
     // MARK: - URLSessionDownloadDelegate
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64,
                     totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        guard let info = Self.parse(downloadTask), totalBytesExpectedToWrite > 0 else { return }
-        let f = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
+        guard let info = Self.parse(downloadTask) else { return }
+        let expected = totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : info.expected
+        guard expected > 0 else { return }
+        let f = min(0.99, Double(totalBytesWritten) / Double(expected))
         guard f - (lastReported[info.id] ?? -1) >= 0.02 || f >= 1 else { return }
         lastReported[info.id] = f
         Task { @MainActor in self.onProgress?(info.id, f) }
@@ -114,18 +122,20 @@ final class BackgroundDownloads: NSObject, URLSessionDownloadDelegate {
         if let http = downloadTask.response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             return                              // not moved: reported as a failure below
         }
+        guard SubsonicCache.looksLikeAudio(downloadTask.response) else { return }   // an error body
         let fm = FileManager.default
         let dest = SubsonicCache.downloadsDir.appendingPathComponent(info.fileName)
         try? fm.removeItem(at: dest)
         guard (try? fm.moveItem(at: location, to: dest)) != nil else { return }
-        SubsonicCache.link(SubsonicCache.dir.appendingPathComponent(info.fileName))
+        SubsonicCache.link(SubsonicCache.dir.appendingPathComponent(info.cacheName))
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard let info = Self.parse(task) else { return }
         lastReported[info.id] = nil
         lock.lock(); active.remove(info.id); lock.unlock()
-        let landed = SubsonicCache.isDownloaded(SubsonicCache.dir.appendingPathComponent(info.fileName))
+        let landed = FileManager.default.fileExists(
+            atPath: SubsonicCache.downloadsDir.appendingPathComponent(info.fileName).path)
         let cancelled = (error as? URLError)?.code == .cancelled
         let bytes = task.countOfBytesReceived
         Task { @MainActor in self.onFinished?(info.id, landed, cancelled, bytes) }

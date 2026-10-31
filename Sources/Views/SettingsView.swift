@@ -145,6 +145,21 @@ struct SettingsView: View {
                                              set: { sync.setDownloadOnMobileData($0) })) {
                             Label("Download on Mobile Data", systemImage: "arrow.down.circle")
                         }
+                        // Original streams only after the whole file arrives (then full
+                        // EQ and crossfade); 320 / 192 start in seconds, converted on the
+                        // server. Download quality applies to downloads started from now.
+                        Picker(selection: Binding(get: { sync.streamQuality },
+                                                  set: { sync.setStreamQuality($0) })) {
+                            ForEach(SubsonicSync.Quality.allCases) { Text($0.label).tag($0) }
+                        } label: {
+                            Label("Streaming Quality", systemImage: "waveform")
+                        }
+                        Picker(selection: Binding(get: { sync.downloadQuality },
+                                                  set: { sync.setDownloadQuality($0) })) {
+                            ForEach(SubsonicSync.Quality.allCases) { Text($0.label).tag($0) }
+                        } label: {
+                            Label("Download Quality", systemImage: "arrow.down.circle.fill")
+                        }
                         HStack {
                             Label("Play Cache", systemImage: "internaldrive")
                             Spacer()

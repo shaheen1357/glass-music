@@ -516,6 +516,10 @@ enum SubsonicCache {
             try? FileManager.default.removeItem(at: tmp)
             throw SubsonicError.http(http.statusCode)
         }
+        guard looksLikeAudio(resp) else {           // an error page, not the song
+            try? FileManager.default.removeItem(at: tmp)
+            throw SubsonicError.malformed
+        }
         // Never replace a copy that's already there: the player may have it open.
         // Moving into place is a single rename, so a reader sees no file or a whole one.
         if isCached(dest) {
@@ -545,6 +549,13 @@ enum SubsonicCache {
         return d
     }
 
+    /// Subsonic reports errors (bad login, missing song) as a 200 with a JSON or XML
+    /// body. Saved under the song's name that body would "be" the song and never play.
+    static func looksLikeAudio(_ response: URLResponse?) -> Bool {
+        guard let mime = response?.mimeType?.lowercased() else { return true }
+        return !(mime.contains("json") || mime.contains("xml") || mime.hasPrefix("text/"))
+    }
+
     /// A server song's cache path under THIS launch's container. iOS can move the app's
     /// container between launches and updates, so a full path saved earlier (in the
     /// catalog cache) can point nowhere; only the file name is stable.
@@ -553,13 +564,24 @@ enum SubsonicCache {
     /// The file-name stem a server id is cached under (fileURL's naming).
     static func stem(_ id: String) -> String { id.replacingOccurrences(of: "/", with: "_") }
 
-    /// Where the download of the song cached at `cacheURL` lives.
+    /// Where the download of the song cached at `cacheURL` lives: the original file
+    /// under the song's own name, or a converted copy (Download Quality 320 / 192)
+    /// saved as "<id>.mp3" so the player sees its real type. Whichever exists.
     static func downloadedFile(for cacheURL: URL) -> URL {
-        downloadsDir.appendingPathComponent(cacheURL.lastPathComponent)
+        let original = downloadsDir.appendingPathComponent(cacheURL.lastPathComponent)
+        if FileManager.default.fileExists(atPath: original.path) { return original }
+        let converted = convertedDownload(for: cacheURL)
+        return FileManager.default.fileExists(atPath: converted.path) ? converted : original
+    }
+
+    static func convertedDownload(for cacheURL: URL) -> URL {
+        downloadsDir.appendingPathComponent(cacheURL.deletingPathExtension().lastPathComponent + ".mp3")
     }
 
     static func isDownloaded(_ cacheURL: URL) -> Bool {
-        FileManager.default.fileExists(atPath: downloadedFile(for: cacheURL).path)
+        let fm = FileManager.default
+        return fm.fileExists(atPath: downloadsDir.appendingPathComponent(cacheURL.lastPathComponent).path)
+            || fm.fileExists(atPath: convertedDownload(for: cacheURL).path)
     }
 
     static func isLink(_ url: URL) -> Bool {
@@ -588,11 +610,12 @@ enum SubsonicCache {
         link(cacheURL)
     }
 
-    /// Delete a download and its link. A plain cached copy is left alone.
+    /// Delete a download (either form) and its link. A plain cached copy is left alone.
     static func removeDownload(_ cacheURL: URL) {
         let fm = FileManager.default
         if isLink(cacheURL) { try? fm.removeItem(at: cacheURL) }
-        try? fm.removeItem(at: downloadedFile(for: cacheURL))
+        try? fm.removeItem(at: downloadsDir.appendingPathComponent(cacheURL.lastPathComponent))
+        try? fm.removeItem(at: convertedDownload(for: cacheURL))
     }
 
     /// Bytes on disk: downloads, and the play cache (links to downloads not counted).

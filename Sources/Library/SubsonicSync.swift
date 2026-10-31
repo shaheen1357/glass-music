@@ -33,6 +33,41 @@ final class SubsonicSync {
     /// Songs you chose to fetch over mobile data despite the Wi-Fi-only default.
     private var cellularAllowedIDs: Set<String> = []
     private(set) var downloadOnMobileData = UserDefaults.standard.bool(forKey: "downloads.onMobileData")
+
+    /// Original (the FLAC as stored), or converted on the server to MP3.
+    enum Quality: String, CaseIterable, Identifiable {
+        case original, kbps320, kbps192
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .original: return "Original (FLAC)"
+            case .kbps320: return "320 kbps"
+            case .kbps192: return "192 kbps"
+            }
+        }
+        var bitRate: Int? {
+            switch self {
+            case .original: return nil
+            case .kbps320: return 320
+            case .kbps192: return 192
+            }
+        }
+    }
+    /// Streaming defaults to 320: Apple's streaming player won't play FLAC over the
+    /// network (it opened and abandoned the connection, spinning forever), and a 320
+    /// stream is a quarter the size. Original streaming = wait for the whole file.
+    private(set) var streamQuality = Quality(rawValue: UserDefaults.standard.string(forKey: "quality.stream") ?? "") ?? .kbps320
+    /// Applies to downloads started from now on; existing ones stay as they are.
+    private(set) var downloadQuality = Quality(rawValue: UserDefaults.standard.string(forKey: "quality.download") ?? "") ?? .original
+
+    func setStreamQuality(_ q: Quality) {
+        streamQuality = q
+        UserDefaults.standard.set(q.rawValue, forKey: "quality.stream")
+    }
+    func setDownloadQuality(_ q: Quality) {
+        downloadQuality = q
+        UserDefaults.standard.set(q.rawValue, forKey: "quality.download")
+    }
     /// Server ids being fetched right now (download button or playback).
     private(set) var fetchingIDs: Set<String> = []
     /// How far each of those fetches has got, 0...1, for the download rings.
@@ -713,10 +748,18 @@ final class SubsonicSync {
         if let client = store.client {
             let byID = remoteTracksByID()
             for sid in desired where !queuedIDs.contains(sid) && !failedIDs.contains(sid) {
-                guard let t = byID[sid], !SubsonicCache.isDownloaded(t.url),
-                      let url = client.downloadURL(id: sid) else { continue }
+                guard let t = byID[sid], !SubsonicCache.isDownloaded(t.url) else { continue }
+                let rate = downloadQuality.bitRate
+                let url: URL?
+                if let rate { url = client.streamURL(id: sid, maxBitRate: rate, format: "mp3") }
+                else { url = client.downloadURL(id: sid) }
+                guard let url else { continue }
+                let fileName = rate == nil ? t.url.lastPathComponent
+                    : SubsonicCache.convertedDownload(for: t.url).lastPathComponent
                 BackgroundDownloads.shared.enqueue(
-                    id: sid, fileName: t.url.lastPathComponent, url: url,
+                    id: sid, fileName: fileName, cacheName: t.url.lastPathComponent,
+                    expectedBytes: Int64(t.duration * Double(rate ?? 0) * 125),
+                    url: url,
                     allowCellular: downloadOnMobileData || cellularAllowedIDs.contains(sid) || requeue.contains(sid))
                 queuedIDs.insert(sid)
             }
@@ -824,26 +867,34 @@ final class SubsonicSync {
 
     // MARK: - Streaming seam (see PlayerEngine "Streaming (hybrid)")
     /// The song's file when it's already on the phone (downloaded or cached), else nil.
+    /// A download is answered with the real file in the downloads folder, not the
+    /// cache link to it: the player opens files, and links are one more thing to fail.
     func readyFile(for track: Track) -> URL? {
         guard SubsonicID.isRemote(track) else { return nil }
         let u = SubsonicCache.currentURL(for: track.url)
-        if SubsonicCache.isDownloaded(u) { SubsonicCache.link(u); return u }
+        if SubsonicCache.isDownloaded(u) {
+            SubsonicCache.link(u)                    // for everything that checks the cache path
+            return SubsonicCache.downloadedFile(for: u)
+        }
+        if SubsonicCache.isLink(u) { return nil }    // a link to a download that's gone
         return SubsonicCache.isCached(u) ? u : nil
     }
 
-    /// Where to stream a server song from: the file as the server stores it, no
-    /// conversion (Navidrome serves it with byte ranges, so seeking works).
+    /// Where to stream a server song from, converted to MP3 at the chosen bitrate. nil
+    /// for Original: then the player fetches the whole file and plays it with effects.
     func streamURL(for track: Track) -> URL? {
         guard !library.effectiveOffline, let client = store.client,
-              let sid = SubsonicID.serverID(for: track) else { return nil }
-        return client.streamURL(id: sid, format: "raw")
+              let sid = SubsonicID.serverID(for: track), let rate = streamQuality.bitRate else { return nil }
+        return client.streamURL(id: sid, maxBitRate: rate, format: "mp3")
     }
 
     /// A streamed song's whole file into the cache, so its next play gets the engine.
     /// That is a second fetch of the same song, so only on Wi-Fi (or with Sync on
     /// Mobile Data on); on mobile data the stream alone is the cost.
     func fillCacheIfAllowed(_ track: Track) {
-        guard !net.isCellular || useMobileData else { return }
+        // A converted stream was chosen to save data; fetching the FLAC behind it as
+        // well would undo that. Songs you want with full effects: download them.
+        guard streamQuality == .original, !net.isCellular || useMobileData else { return }
         Task { _ = await ensureLocal(track) }
     }
 
@@ -859,7 +910,10 @@ final class SubsonicSync {
         }
         // Always the path under this launch's container, never the saved one.
         let cacheURL = SubsonicCache.currentURL(for: track.url)
-        if SubsonicCache.isDownloaded(cacheURL) { SubsonicCache.link(cacheURL); return cacheURL }
+        if SubsonicCache.isDownloaded(cacheURL) {
+            SubsonicCache.link(cacheURL)
+            return SubsonicCache.downloadedFile(for: cacheURL)
+        }
         if SubsonicCache.isCached(cacheURL) { return cacheURL }
         if let running = inflight[sid] { return await running.value }
         // Wanted as a download but still queued: playing it now IS the download. Take it
@@ -901,6 +955,8 @@ final class SubsonicSync {
             }
         }
         cacheVersion &+= 1
+        // Promoted into the downloads folder: hand the player the file, not the link.
+        if let url, SubsonicCache.isDownloaded(url) { return SubsonicCache.downloadedFile(for: url) }
         return url
     }
 
