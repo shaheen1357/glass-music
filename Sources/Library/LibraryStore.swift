@@ -116,7 +116,14 @@ final class LibraryStore: ObservableObject {
     /// content so a song you also hold locally isn't listed twice), and persist it
     /// so the catalog is browsable offline next launch.
     func mergeRemote(_ remote: [Track], persist: Bool = true) {
-        remoteTracks = remote
+        // Keep cover art already fetched for songs we still have, so a full sync (pull
+        // to refresh) doesn't throw every cover away and download them all again.
+        let art = Dictionary(remoteTracks.compactMap { t in t.artworkData.map { (t.id, $0) } },
+                             uniquingKeysWith: { a, _ in a })
+        remoteTracks = remote.map { t in
+            guard t.artworkData == nil, let d = art[t.id] else { return t }
+            var m = t; m.artworkData = d; return m
+        }
         rebuildMerged()
         if persist { saveRemoteCache(remote) }
     }
@@ -208,8 +215,16 @@ final class LibraryStore: ObservableObject {
         return base.appendingPathComponent("remote-catalog.json")
     }
     private func loadRemoteCache() -> [Track]? {
-        guard let data = try? Data(contentsOf: remoteCacheURL) else { return nil }
-        return try? JSONDecoder().decode([Track].self, from: data)
+        guard let data = try? Data(contentsOf: remoteCacheURL),
+              let tracks = try? JSONDecoder().decode([Track].self, from: data) else { return nil }
+        // The saved paths carry the container of the launch that saved them; re-root
+        // them, or every downloaded/cached song looks missing after an app update.
+        return tracks.map { t in
+            guard SubsonicID.isRemote(t) else { return t }
+            var m = t
+            m.url = SubsonicCache.currentURL(for: t.url)
+            return m
+        }
     }
     private func saveRemoteCache(_ tracks: [Track]) {
         let url = remoteCacheURL

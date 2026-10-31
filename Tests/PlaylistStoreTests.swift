@@ -115,4 +115,29 @@ final class PlaylistStoreTests: XCTestCase {
         store.addTrackIDs(["a"], to: p.id, allowDuplicates: true)    // opt-in duplicate
         XCTAssertEqual(store.playlists.first { $0.id == p.id }?.trackIDs, ["a", "b", "a"])
     }
+
+    // Offline the screen hides songs that can't play; a drag must not move them.
+    func testReorderVisibleKeepsHiddenEntriesInPlace() {
+        let store = makeStore()
+        let p = store.createPlaylist(name: "X")
+        ["a", "h", "b", "c"].forEach { store.add(track($0), to: p.id) }
+        // "h" is hidden; on screen the user drags "c" to the top of a, b, c.
+        store.reorderVisible(["c", "a", "b"], in: p.id)
+        XCTAssertEqual(store.playlists.first { $0.id == p.id }?.trackIDs, ["c", "h", "a", "b"])
+    }
+
+    // Liked as the server's copy, shown as the phone's own file: same song, other id.
+    func testLikeMatchesTheSameSongUnderAnotherID() {
+        let store = makeStore()
+        let server = track("subsonic:s1", artist: "Rompasso", album: "Angetenar")
+        let phone = Track(id: "/docs/Rompasso - Angetenar.flac",
+                          url: URL(fileURLWithPath: "/docs/Rompasso - Angetenar.flac"),
+                          title: "subsonic:s1", artist: "Rompasso", album: "Angetenar",
+                          trackNumber: 0, duration: 100, artworkData: nil, dateAdded: Date())
+        store.toggleLike(server)
+        XCTAssertTrue(store.isLiked(phone))
+        store.toggleLike(phone)                       // unlikes, rather than liking twice
+        XCTAssertFalse(store.isLiked(server))
+        XCTAssertEqual(store.liked?.trackIDs ?? [], [])
+    }
 }

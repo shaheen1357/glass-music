@@ -3,7 +3,7 @@ import UIKit
 
 struct Track: Identifiable, Hashable, Codable, Sendable {
     let id: String          // stable id = file path
-    let url: URL
+    var url: URL                    // a server song's is re-rooted on load (see LibraryStore)
     var title: String
     var artist: String
     var album: String

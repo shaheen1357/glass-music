@@ -114,14 +114,22 @@ final class PlaylistStore: ObservableObject {
     // MARK: - Liked
     var liked: Playlist? { playlists.first { $0.kind == .liked } }
 
-    func isLiked(_ track: Track) -> Bool {
-        liked?.trackIDs.contains(track.id) ?? false
+    func isLiked(_ track: Track) -> Bool { !likedEntries(matching: track).isEmpty }
+
+    /// Liked entries that are this song: the same id, or the same content key. A song
+    /// liked as the server's copy and shown as the phone's own file has a different id
+    /// but the same key — matching on id alone showed it unliked and liked it twice.
+    private func likedEntries(matching track: Track) -> Set<String> {
+        guard let l = liked else { return [] }
+        let key = track.contentKey
+        return Set(l.trackIDs.filter { $0 == track.id || l.trackKeys?[$0] == key })
     }
 
     func toggleLike(_ track: Track) {
         guard let index = playlists.firstIndex(where: { $0.kind == .liked }) else { return }
-        if let existing = playlists[index].trackIDs.firstIndex(of: track.id) {
-            playlists[index].trackIDs.remove(at: existing)
+        let existing = likedEntries(matching: track)
+        if !existing.isEmpty {
+            playlists[index].trackIDs.removeAll { existing.contains($0) }
         } else {
             playlists[index].trackIDs.insert(track.id, at: 0)
             rememberKey(track, at: index)
@@ -448,32 +456,54 @@ final class PlaylistStore: ObservableObject {
         return out
     }
 
+    /// A stored playlist entry and the track it shows as. The two ids differ when the
+    /// entry is a server song the phone also holds (the row plays the phone's copy), so
+    /// edits must act on entryID, never on track.id.
+    struct Entry { let entryID: String; let track: Track }
+
+    func entries(for playlist: Playlist, in library: LibraryStore) -> [Entry] {
+        playlist.trackIDs.compactMap { id in resolve(id, in: playlist, library).map { Entry(entryID: id, track: $0) } }
+    }
+
+    /// Apply a reorder of the entries on screen to the stored list. Offline the screen
+    /// hides songs that can't play; those keep their places, and the visible ones fill
+    /// the visible slots in their new order, so nothing hidden moves.
+    func reorderVisible(_ visibleEntryIDs: [String], in playlistID: String) {
+        guard let index = playlists.firstIndex(where: { $0.id == playlistID }) else { return }
+        let visible = Set(visibleEntryIDs)
+        var next = visibleEntryIDs.makeIterator()
+        playlists[index].trackIDs = playlists[index].trackIDs.map { visible.contains($0) ? (next.next() ?? $0) : $0 }
+        save()
+    }
+
     func tracks(for playlist: Playlist, in library: LibraryStore) -> [Track] {
+        entries(for: playlist, in: library).map(\.track)
+    }
+
+    private func resolve(_ id: String, in playlist: Playlist, _ library: LibraryStore) -> Track? {
         // Resolve by content FIRST: the content index holds the best available source
         // for a song — the local file if it's on the device, otherwise the server copy
         // (which streams). So deleting a local file switches that track to streaming
         // instead of dropping it from the playlist. Fall back to a direct id lookup for
         // any entry that hasn't got a content key yet.
-        playlist.trackIDs.compactMap { id in
-            // A server-anchored entry whose file is also on the phone: that exact file
-            // (matched by name), before any tag-based guess.
-            if let t = library.localTwin(ofRemoteID: id) { return t }
-            if let key = playlist.trackKeys?[id], let t = library.trackByContentKey[key] { return t }
-            // Looser match (title + duration) when the content key missed because a tag
-            // was read differently on each source — still resolves to the local copy,
-            // since the merged index prefers it.
-            if let m = playlist.trackMeta?[id], let t = library.trackByLooseKey[m.looseKey] { return t }
-            if let t = library.tracksByID[id] { return t }
-            // Not resolvable to a real source. Online, keep the song visible as a
-            // placeholder built from its stored metadata (pending upload / schema-only);
-            // offline, hide it so a playlist shows only what actually plays.
-            if !library.effectiveOffline, let m = playlist.trackMeta?[id] {
-                return Track(id: id, url: URL(fileURLWithPath: "/pending/\(id)"),
-                             title: m.title, artist: m.artist, album: m.album,
-                             trackNumber: 0, duration: m.duration, artworkData: nil,
-                             dateAdded: .distantPast)
-            }
-            return nil
+        // A server-anchored entry whose file is also on the phone: that exact file
+        // (matched by name), before any tag-based guess.
+        if let t = library.localTwin(ofRemoteID: id) { return t }
+        if let key = playlist.trackKeys?[id], let t = library.trackByContentKey[key] { return t }
+        // Looser match (title + duration) when the content key missed because a tag
+        // was read differently on each source — still resolves to the local copy,
+        // since the merged index prefers it.
+        if let m = playlist.trackMeta?[id], let t = library.trackByLooseKey[m.looseKey] { return t }
+        if let t = library.tracksByID[id] { return t }
+        // Not resolvable to a real source. Online, keep the song visible as a
+        // placeholder built from its stored metadata (pending upload / schema-only);
+        // offline, hide it so a playlist shows only what actually plays.
+        if !library.effectiveOffline, let m = playlist.trackMeta?[id] {
+            return Track(id: id, url: URL(fileURLWithPath: "/pending/\(id)"),
+                         title: m.title, artist: m.artist, album: m.album,
+                         trackNumber: 0, duration: m.duration, artworkData: nil,
+                         dateAdded: .distantPast)
         }
+        return nil
     }
 }

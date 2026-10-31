@@ -33,6 +33,10 @@ struct MusicApp: App {
                     // Remote tracks resolve to a cached local file before the engine
                     // opens them; local tracks return instantly, unchanged.
                     player.ensureLocalURL = { track in await sync.ensureLocal(track) }
+                    // Hybrid streaming: on the phone -> the engine; not yet -> stream it.
+                    player.readyFileFor = { track in sync.readyFile(for: track) }
+                    player.streamURLFor = { track in sync.streamURL(for: track) }
+                    player.fillCache = { track in sync.fillCacheIfAllowed(track) }
                     await library.scan()
                     // Restore the last session (paused) once the library is loaded
                     // so track IDs resolve to real files.
@@ -52,6 +56,11 @@ struct MusicApp: App {
                     } else if phase == .active {
                         Task { await sync.autoSyncIfAllowed() }
                     }
+                }
+                // Coming back online (signal returns, or Offline Mode switched off) sends
+                // edits made offline straight up, without waiting for an app switch.
+                .onChange(of: library.effectiveOffline) { wasOffline, isOffline in
+                    if wasOffline && !isOffline { Task { await sync.autoSyncIfAllowed() } }
                 }
                 .onOpenURL { url in
                     // "Open in Music" from AirDrop / the share sheet / Files.

@@ -23,19 +23,49 @@ final class BackgroundDownloads: NSObject, URLSessionDownloadDelegate {
     var onFinished: (@MainActor (String, Bool, Bool, Int64) -> Void)?
 
     private var lastReported: [String: Double] = [:]   // touched on the delegate queue only
+    /// Ids with a task in the session, kept here (under a lock) rather than asked of
+    /// the session, so a second enqueue of the same song is refused on the spot. The
+    /// async task list arrived too late at launch: the first sync re-queued everything
+    /// and songs were fetched twice.
+    private var active: Set<String> = []
+    private let lock = NSLock()
 
     private lazy var session: URLSession = {
         let c = URLSessionConfiguration.background(withIdentifier: Self.identifier)
         c.sessionSendsLaunchEvents = true
         c.isDiscretionary = false
         c.allowsCellularAccess = true          // each request decides (Wi-Fi only by default)
+        c.httpMaximumConnectionsPerHost = 2    // full-size files: a few at a time, not a flood
         return URLSession(configuration: c, delegate: self, delegateQueue: nil)
     }()
 
-    /// Reconnect to tasks from a previous launch. Call once at startup.
-    func start() { _ = session }
+    /// Reconnect to tasks from a previous launch and learn which songs they are.
+    /// Call once at startup. Waits briefly for the list so nothing is queued twice.
+    func start() {
+        let sem = DispatchSemaphore(value: 0)
+        session.getAllTasks { tasks in
+            let ids = Set(tasks.filter { $0.state == .running || $0.state == .suspended }
+                .compactMap { Self.parse($0)?.id })
+            self.lock.lock(); self.active.formUnion(ids); self.lock.unlock()
+            sem.signal()
+        }
+        _ = sem.wait(timeout: .now() + 2)
+    }
+
+    /// Server ids with a task queued or running, right now.
+    var activeIDsNow: Set<String> { lock.lock(); defer { lock.unlock() }; return active }
+
+    /// Hold the queue while a song is being fetched to play, so the song you asked for
+    /// gets the whole connection instead of a sixth of it; resume afterwards.
+    func pause() { session.getAllTasks { $0.forEach { $0.suspend() } } }
+    func resume() { session.getAllTasks { $0.forEach { $0.resume() } } }
 
     func enqueue(id: String, fileName: String, url: URL, allowCellular: Bool) {
+        lock.lock()
+        let already = active.contains(id)
+        if !already { active.insert(id) }
+        lock.unlock()
+        guard !already else { return }        // one transfer per song, ever
         var r = URLRequest(url: url)
         r.allowsCellularAccess = allowCellular  // false: the task waits for Wi-Fi
         let t = session.downloadTask(with: r)
@@ -51,12 +81,16 @@ final class BackgroundDownloads: NSObject, URLSessionDownloadDelegate {
     }
 
     func cancel(ids: Set<String>) {
+        lock.lock(); active.subtract(ids); lock.unlock()
         session.getAllTasks { tasks in
             for t in tasks where ids.contains(Self.parse(t)?.id ?? "") { t.cancel() }
         }
     }
 
-    func cancelAll() { session.getAllTasks { $0.forEach { $0.cancel() } } }
+    func cancelAll() {
+        lock.lock(); active.removeAll(); lock.unlock()
+        session.getAllTasks { $0.forEach { $0.cancel() } }
+    }
 
     private static func parse(_ t: URLSessionTask) -> (id: String, fileName: String)? {
         let parts = (t.taskDescription ?? "").split(separator: "\t", maxSplits: 1).map(String.init)
@@ -90,6 +124,7 @@ final class BackgroundDownloads: NSObject, URLSessionDownloadDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard let info = Self.parse(task) else { return }
         lastReported[info.id] = nil
+        lock.lock(); active.remove(info.id); lock.unlock()
         let landed = SubsonicCache.isDownloaded(SubsonicCache.dir.appendingPathComponent(info.fileName))
         let cancelled = (error as? URLError)?.code == .cancelled
         let bytes = task.countOfBytesReceived

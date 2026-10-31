@@ -505,6 +505,8 @@ enum SubsonicCache {
                              onProgress: ((Double) -> Void)? = nil) async throws -> URL {
         let dest = fileURL(id: id, suffix: suffix)
         if isCached(dest) { return dest }
+        // A link left pointing nowhere would block the move below: clear it.
+        if isLink(dest) { try? FileManager.default.removeItem(at: dest) }
         guard let remote = client.streamURL(id: id, maxBitRate: maxBitRate, format: format) else {
             throw SubsonicError.badURL
         }
@@ -543,6 +545,11 @@ enum SubsonicCache {
         return d
     }
 
+    /// A server song's cache path under THIS launch's container. iOS can move the app's
+    /// container between launches and updates, so a full path saved earlier (in the
+    /// catalog cache) can point nowhere; only the file name is stable.
+    static func currentURL(for url: URL) -> URL { dir.appendingPathComponent(url.lastPathComponent) }
+
     /// The file-name stem a server id is cached under (fileURL's naming).
     static func stem(_ id: String) -> String { id.replacingOccurrences(of: "/", with: "_") }
 
@@ -568,6 +575,17 @@ enum SubsonicCache {
         if (try? fm.destinationOfSymbolicLink(atPath: cacheURL.path)) == target.path { return }
         try? fm.removeItem(at: cacheURL)
         try? fm.createSymbolicLink(at: cacheURL, withDestinationURL: target)
+    }
+
+    /// A song just fetched to play that is also wanted as a download: move the file into
+    /// the downloads folder and link it, instead of fetching the same file twice.
+    static func promote(_ cacheURL: URL) {
+        let fm = FileManager.default
+        guard !isLink(cacheURL), fm.fileExists(atPath: cacheURL.path) else { return }
+        let target = downloadedFile(for: cacheURL)
+        try? fm.removeItem(at: target)
+        guard (try? fm.moveItem(at: cacheURL, to: target)) != nil else { return }
+        link(cacheURL)
     }
 
     /// Delete a download and its link. A plain cached copy is left alone.

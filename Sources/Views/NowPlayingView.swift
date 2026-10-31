@@ -40,8 +40,16 @@ struct MiniPlayerView: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel("Previous")
                     Button { Haptics.tap(); player.togglePlayPause() } label: {
-                        Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                            .font(.title3).frame(width: 40, height: 44).contentShape(Rectangle())
+                        Group {
+                            if player.isLoading {
+                                ProgressView()                  // fetching from the server
+                            } else if player.loadError != nil {
+                                Image(systemName: "exclamationmark.circle").foregroundStyle(.red)
+                            } else {
+                                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                            }
+                        }
+                        .font(.title3).frame(width: 40, height: 44).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
@@ -286,9 +294,24 @@ struct NowPlayingView: View {
                 .accessibilityLabel("Previous")
             Spacer()
             Button { Haptics.tap(.medium); player.togglePlayPause() } label: {
-                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.system(size: 54))
+                if player.isLoading {
+                    ProgressView().controlSize(.large).frame(width: 54, height: 54)
+                } else {
+                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.system(size: 54))
+                }
             }
-            .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
+            .accessibilityLabel(player.isLoading ? "Loading" : player.isPlaying ? "Pause" : "Play")
+            .overlay(alignment: .bottom) {
+                if let err = player.loadError {
+                    Text(err).font(.caption).foregroundStyle(.red).multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(width: 260).offset(y: 44)
+                } else if player.isStreaming {
+                    Text("Streaming · EQ and crossfade from the next play")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .frame(width: 260).offset(y: 44)
+                }
+            }
             Spacer()
             Button { Haptics.tap(); player.next() } label: { Image(systemName: "forward.fill").font(.title) }
                 .accessibilityLabel("Next")

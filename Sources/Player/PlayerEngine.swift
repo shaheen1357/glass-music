@@ -14,6 +14,10 @@ final class PlayerEngine {
     private(set) var queue: [Track] = []
     private(set) var currentIndex: Int = 0
     private(set) var isPlaying = false
+    /// Fetching a server song before it can start: the play button shows a spinner.
+    private(set) var isLoading = false
+    /// Why the last song couldn't start, shown under the controls; nil when fine.
+    private(set) var loadError: String?
     var currentTime: Double = 0
     var duration: Double = 0
     var repeatMode: RepeatMode = .off
@@ -105,6 +109,26 @@ final class PlayerEngine {
     /// remote one is downloaded to the cache first. Set by the app; nil = local-only.
     var ensureLocalURL: ((Track) async -> URL?)?
     private var startToken = 0                             // guards async remote-start races
+
+    // MARK: Streaming (hybrid)
+    // A server song that isn't on the phone yet plays through AVPlayer, which starts
+    // within seconds while the file is still arriving. The engine above needs whole
+    // files, so a streamed song plays without EQ, levelling, crossfade or gapless.
+    // Once the stream is fully buffered the whole file is fetched into the cache (on
+    // Wi-Fi), and every later play of that song goes through the engine with all of it.
+    /// The song's file if it's already on the phone (downloaded or cached). Instant.
+    var readyFileFor: ((Track) -> URL?)?
+    /// Where to stream a server song from; nil when it can't be streamed (offline).
+    var streamURLFor: ((Track) -> URL?)?
+    /// Fetch a streamed song's whole file into the cache, for the engine next time.
+    var fillCache: ((Track) -> Void)?
+    /// True while the current song is streaming (no EQ / levelling / crossfade).
+    private(set) var isStreaming = false
+    @ObservationIgnored private var streamPlayer: AVPlayer?
+    @ObservationIgnored private var streamObservations: [NSKeyValueObservation] = []
+    @ObservationIgnored private var streamTimeObserver: Any?
+    @ObservationIgnored private var streamEndObserver: NSObjectProtocol?
+    @ObservationIgnored private var streamCacheFilled = false
 
     // MARK: Session persistence (last song + position + shuffle/repeat + queue)
     private struct PersistedState: Codable {
@@ -390,7 +414,7 @@ final class PlayerEngine {
         isShuffled = true
         // Never interrupt: if a song is playing, keep it and queue the shuffled
         // playlist to follow it. Only start fresh when nothing is playing.
-        if audioFile != nil, let current = currentTrack {
+        if audioFile != nil || streamPlayer != nil, let current = currentTrack {
             var rest = tracks.filter { $0.id != current.id }
             rest.shuffle()
             originalQueue = tracks
@@ -408,23 +432,50 @@ final class PlayerEngine {
         let token = startToken
         // Fast path — the file is already on disk (every local track, and any cached
         // remote one): run synchronously, exactly as before, no behaviour change.
-        if FileManager.default.fileExists(atPath: track.url.path) {
+        loadError = nil
+        tearDownStream()
+        if !SubsonicID.isRemote(track), FileManager.default.fileExists(atPath: track.url.path) {
+            isLoading = false
             startCurrentResolved(track, url: track.url)
             return
         }
-        // Remote and not cached yet: fetch it, then start — unless a newer request
-        // (next / previous / stop) superseded this one while it downloaded.
+        // A server song already on the phone (downloaded or cached): the engine, now.
+        if SubsonicID.isRemote(track), let ready = readyFileFor?(track) {
+            isLoading = false
+            startCurrentResolved(track, url: ready)
+            return
+        }
+        // Not on the phone: stream it, starting in seconds.
+        if SubsonicID.isRemote(track), let url = streamURLFor?(track) {
+            startStream(track, url: url, token: token)
+            return
+        }
+        fetchThenPlay(track, token: token)
+    }
+
+    /// The whole-file path: fetch the song, then hand it to the engine — unless a newer
+    /// request (next / previous / stop) superseded this one meanwhile. Used when
+    /// streaming isn't possible, and as the fallback when a stream fails to open.
+    private func fetchThenPlay(_ track: Track, token: Int) {
         isPlaying = false
+        isLoading = true
         stopDisplayTimer()
         updateNowPlayingInfo()
         Task { @MainActor [weak self] in
-            guard let self, let url = await self.ensureLocalURL?(track) else { return }
+            guard let self else { return }
+            let url = await self.ensureLocalURL?(track)
             guard token == self.startToken, self.currentTrack?.id == track.id else { return }
+            self.isLoading = false
+            guard let url else {
+                self.loadError = "Couldn't get “\(track.title)” from the server."
+                return
+            }
             self.startCurrentResolved(track, url: url)
         }
     }
 
     private func startCurrentResolved(_ track: Track, url: URL) {
+        tearDownStream()
         onPlay?(track)
         isSuspended = false
         needsReschedule = false
@@ -444,6 +495,7 @@ final class PlayerEngine {
                 audioFile = nil
                 isPlaying = false
                 stopDisplayTimer()
+                discardBrokenCopy(of: track, at: url)
                 return
             }
             seekFrame = 0
@@ -465,7 +517,18 @@ final class PlayerEngine {
             audioFile = nil
             isPlaying = false
             stopDisplayTimer()
+            discardBrokenCopy(of: track, at: url)
         }
+    }
+
+    /// A server song's file that won't open is thrown away, so the next play fetches a
+    /// good copy instead of failing on the same bad one forever. A broken download is
+    /// re-queued by the sync on its next pass. Your own files are never touched.
+    private func discardBrokenCopy(of track: Track, at url: URL) {
+        loadError = "Couldn't play “\(track.title)”. Try again to fetch a fresh copy."
+        guard SubsonicID.isRemote(track) else { return }
+        if SubsonicCache.isLink(url) { SubsonicCache.removeDownload(url) }
+        else if url.path.hasPrefix(SubsonicCache.dir.path) { try? FileManager.default.removeItem(at: url) }
     }
 
     /// Warm the cache for the next track so a gapless/crossfade hand-off (which
@@ -511,6 +574,12 @@ final class PlayerEngine {
         }
         switch repeatMode {
         case .one:
+            if let p = streamPlayer {
+                p.seek(to: .zero)
+                p.play()
+                currentTime = 0
+                return
+            }
             seekFrame = 0
             pausedFrame = nil
             playerNode.stop()
@@ -526,6 +595,10 @@ final class PlayerEngine {
     }
 
     func togglePlayPause() {
+        if streamPlayer != nil {
+            if isPlaying { pause() } else { resume() }
+            return
+        }
         if audioFile == nil {
             if let track = currentTrack {
                 play(tracks: queue.isEmpty ? [track] : queue, startAt: currentIndex)
@@ -573,6 +646,14 @@ final class PlayerEngine {
     }
 
     func seek(to seconds: Double) {
+        if let p = streamPlayer {
+            guard seconds.isFinite else { return }
+            let target = max(0, min(seconds, max(0, duration - 0.5)))
+            currentTime = target
+            p.seek(to: CMTime(seconds: target, preferredTimescale: 600))
+            refreshNowPlayingElapsed()
+            return
+        }
         guard audioFile != nil, sampleRate > 0, seconds.isFinite else { return }
         abortTransition()
         let wasPlaying = isPlaying
@@ -601,6 +682,13 @@ final class PlayerEngine {
 
     private func resume() {
         abortTransition()
+        if let p = streamPlayer {
+            activateSession()
+            p.play()
+            isPlaying = true
+            updateNowPlayingInfo()
+            return
+        }
         if audioFile == nil {
             if currentTrack != nil { startCurrent() }
             return
@@ -628,6 +716,13 @@ final class PlayerEngine {
 
     private func pause() {
         abortTransition()
+        if let p = streamPlayer {
+            p.pause()
+            isPlaying = false
+            updateNowPlayingInfo()
+            savePlaybackState()
+            return
+        }
         pausedFrame = currentFrame               // capture the live position first
         playerNode.pause()
         isPlaying = false
@@ -635,6 +730,124 @@ final class PlayerEngine {
         updateCurrentTime()
         updateNowPlayingInfo()
         savePlaybackState()
+    }
+
+    // MARK: - Streaming
+    private func startStream(_ track: Track, url: URL, token: Int) {
+        // Silence the engine: the stream takes over this song.
+        abortTransition()
+        idleNode.stop()
+        playerNode.stop()
+        scheduleGeneration &+= 1                 // neutralise the engine's stale completion
+        audioFile = nil
+        pausedFrame = nil
+        stopDisplayTimer()
+        activateSession()
+
+        let item = AVPlayerItem(url: url)
+        let p = AVPlayer(playerItem: item)
+        p.automaticallyWaitsToMinimizeStalling = true
+        streamPlayer = p
+        isStreaming = true
+        streamCacheFilled = false
+        isLoading = true                         // until audio actually flows
+        isPlaying = false
+        duration = track.duration
+        currentTime = 0
+
+        streamObservations = [
+            item.observe(\.status, options: [.new]) { [weak self] item, _ in
+                Task { @MainActor in self?.streamStatusChanged(item, track: track, token: token) }
+            },
+            p.observe(\.timeControlStatus, options: [.new]) { [weak self] p, _ in
+                Task { @MainActor in self?.streamTimeControlChanged(p, token: token) }
+            },
+            item.observe(\.loadedTimeRanges, options: [.new]) { [weak self] item, _ in
+                Task { @MainActor in self?.streamBuffered(item, track: track, token: token) }
+            },
+        ]
+        streamTimeObserver = p.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main
+        ) { [weak self] t in
+            MainActor.assumeIsolated {
+                guard let self, token == self.startToken, t.seconds.isFinite else { return }
+                self.currentTime = t.seconds
+            }
+        }
+        streamEndObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, token == self.startToken else { return }
+                self.trackDidEnd()
+            }
+        }
+        onPlay?(track)
+        p.play()
+        updateNowPlayingInfo()
+        savePlaybackState()
+    }
+
+    private func streamStatusChanged(_ item: AVPlayerItem, track: Track, token: Int) {
+        guard token == startToken else { return }
+        switch item.status {
+        case .readyToPlay:
+            let d = item.duration.seconds
+            if d.isFinite && d > 0 { duration = d; updateNowPlayingInfo() }
+        case .failed:
+            // The stream wouldn't open (format, network, server): fall back to fetching
+            // the whole file and playing it through the engine, as before.
+            print("Stream failed for \(track.title): \(String(describing: item.error))")
+            tearDownStream()
+            fetchThenPlay(track, token: token)
+        default:
+            break
+        }
+    }
+
+    private func streamTimeControlChanged(_ p: AVPlayer, token: Int) {
+        guard token == startToken, p === streamPlayer else { return }
+        switch p.timeControlStatus {
+        case .playing:
+            isLoading = false
+            isPlaying = true
+        case .waitingToPlayAtSpecifiedRate:
+            isLoading = true                     // buffering: the spinner, not a dead button
+        case .paused:
+            isLoading = false
+            isPlaying = false
+        @unknown default:
+            break
+        }
+        updateNowPlayingInfo()
+    }
+
+    /// Once the whole song has arrived for the stream, fetch its file into the cache
+    /// (so the next play uses the engine) and warm the next song. Not before: on a slow
+    /// connection that would starve the stream you're listening to.
+    private func streamBuffered(_ item: AVPlayerItem, track: Track, token: Int) {
+        guard token == startToken, !streamCacheFilled else { return }
+        let total = item.duration.seconds
+        guard total.isFinite, total > 0 else { return }
+        let end = item.loadedTimeRanges.map { $0.timeRangeValue.end.seconds }.max() ?? 0
+        guard end >= total - 0.5 else { return }
+        streamCacheFilled = true
+        fillCache?(track)
+        prefetchUpcoming()
+    }
+
+    private func tearDownStream() {
+        guard let p = streamPlayer else { return }
+        p.pause()
+        if let o = streamTimeObserver { p.removeTimeObserver(o) }
+        streamTimeObserver = nil
+        if let e = streamEndObserver { NotificationCenter.default.removeObserver(e) }
+        streamEndObserver = nil
+        streamObservations.forEach { $0.invalidate() }
+        streamObservations = []
+        p.replaceCurrentItem(with: nil)
+        streamPlayer = nil
+        isStreaming = false
     }
 
     // MARK: - Track transitions (gapless / crossfade)

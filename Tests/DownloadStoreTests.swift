@@ -49,4 +49,10 @@ final class DownloadStoreTests: XCTestCase {
         SubsonicCache.clear()
         XCTAssertFalse(SubsonicCache.isCached(cache))
     }
+
+    // iOS can move the app's container between launches; saved full paths go stale.
+    func testCurrentURLReRootsAPathFromAnEarlierContainer() {
+        let old = URL(fileURLWithPath: "/var/mobile/Containers/Data/Application/OLD/Library/Caches/StreamCache/abc.flac")
+        XCTAssertEqual(SubsonicCache.currentURL(for: old), SubsonicCache.dir.appendingPathComponent("abc.flac"))
+    }
 }

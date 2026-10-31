@@ -224,18 +224,23 @@ struct PlaylistDetailView: View {
     @Environment(\.dismiss) private var dismiss
 
     private var playlist: Playlist? { playlists.playlists.first { $0.id == playlistID } }
-    private var storedTracks: [Track] { playlist.map { playlists.tracks(for: $0, in: library) } ?? [] }
+    private var storedEntries: [PlaylistStore.Entry] { playlist.map { playlists.entries(for: $0, in: library) } ?? [] }
+    private var storedTracks: [Track] { storedEntries.map(\.track) }
 
     private var canReorder: Bool { sortMode == .custom && playlist?.kind != .liked && query.trimmingCharacters(in: .whitespaces).isEmpty }
 
-    private var displayedTracks: [Track] {
-        var items = storedTracks
+    private var displayedTracks: [Track] { displayedEntries.map(\.track) }
+
+    /// Rows on screen with the stored entry each came from, so delete and reorder act
+    /// on the right entry (see PlaylistStore.Entry).
+    private var displayedEntries: [PlaylistStore.Entry] {
+        var items = storedEntries
         let q = query.trimmingCharacters(in: .whitespaces)
         if !q.isEmpty {
             items = items.filter {
-                $0.title.localizedCaseInsensitiveContains(q) ||
-                $0.artist.localizedCaseInsensitiveContains(q) ||
-                $0.album.localizedCaseInsensitiveContains(q)
+                $0.track.title.localizedCaseInsensitiveContains(q) ||
+                $0.track.artist.localizedCaseInsensitiveContains(q) ||
+                $0.track.album.localizedCaseInsensitiveContains(q)
             }
         }
         switch sortMode {
@@ -243,9 +248,9 @@ struct PlaylistDetailView: View {
             // Manual/stored order. Liked Songs are stored newest-first (toggleLike
             // inserts at index 0), so they already show the newest like on top.
             break
-        case .title: items.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-        case .artist: items.sort { $0.artist.localizedCaseInsensitiveCompare($1.artist) == .orderedAscending }
-        case .album: items.sort { $0.album.localizedCaseInsensitiveCompare($1.album) == .orderedAscending }
+        case .title: items.sort { $0.track.title.localizedCaseInsensitiveCompare($1.track.title) == .orderedAscending }
+        case .artist: items.sort { $0.track.artist.localizedCaseInsensitiveCompare($1.track.artist) == .orderedAscending }
+        case .album: items.sort { $0.track.album.localizedCaseInsensitiveCompare($1.track.album) == .orderedAscending }
         case .recentlyAdded:
             // Newest added on top. User playlists append newest LAST, so reverse
             // them; Liked Songs are already stored newest-first, so leave as-is.
@@ -287,12 +292,15 @@ struct PlaylistDetailView: View {
                         })
                     }
                     .onDelete { offsets in
-                        offsets.map { displayedTracks[$0].id }
+                        let rows = displayedEntries
+                        offsets.map { rows[$0].entryID }
                             .forEach { playlists.removeTrack(id: $0, from: playlistID) }
                     }
                     .onMove { source, destination in
                         guard canReorder else { return }
-                        playlists.moveTracks(from: source, to: destination, in: playlistID)
+                        var ids = displayedEntries.map(\.entryID)
+                        ids.move(fromOffsets: source, toOffset: destination)
+                        playlists.reorderVisible(ids, in: playlistID)
                     }
                 }
             }

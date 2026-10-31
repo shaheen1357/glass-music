@@ -45,6 +45,8 @@ final class SubsonicSync {
     /// the Download button fetches it, or the next-track prefetch) awaits the first
     /// instead of downloading over the file the player may already have open.
     @ObservationIgnored private var inflight: [String: Task<URL?, Never>] = [:]
+    /// Songs being fetched to play right now; while above zero the download queue waits.
+    @ObservationIgnored private var playbackFetches = 0
     private let pinnedKey = "subsonic.pinned"
 
     // Cellular / data controls.
@@ -326,9 +328,13 @@ final class SubsonicSync {
         // time, ~113 of them for 340 albums, which is what froze the UI. Cover art
         // follows in the background, grouped by cover id (one fetch per album cover).
         let fresh = try await fetchCatalog(client)
+        let hadArt = Set(library.remoteTracks.filter { $0.artworkData != nil }.map(\.id))
         library.mergeRemote(fresh.tracks, persist: true)     // the one merge + cache
         progressText = nil
-        let jobs = fresh.idsByCover.map { (cover: $0.key, ids: $0.value) }
+        // Only covers we don't already hold.
+        let jobs = fresh.idsByCover.compactMap { cover, ids -> (cover: String, ids: [String])? in
+            ids.allSatisfy(hadArt.contains) ? nil : (cover, ids)
+        }
         Task { @MainActor [weak self] in await self?.backfillArtwork(jobs, client: client) }
     }
 
@@ -532,12 +538,13 @@ final class SubsonicSync {
         if !SubsonicID.isRemote(track) { return .local }
         _ = cacheVersion
         guard let sid = SubsonicID.serverID(for: track) else { return .streams }
-        if SubsonicCache.isDownloaded(track.url) { return .downloaded }
+        let cacheURL = SubsonicCache.currentURL(for: track.url)
+        if SubsonicCache.isDownloaded(cacheURL) { return .downloaded }
         if pinnedIDs.contains(sid) {
             if failedIDs.contains(sid) { return .failed }
             if queuedIDs.contains(sid) { return isWaitingForWiFi(sid) ? .waiting : .downloading }
         }
-        return SubsonicCache.isCached(track.url) ? .cached : .streams
+        return SubsonicCache.isCached(cacheURL) ? .cached : .streams
     }
 
     /// Fraction downloaded so far for a song being downloaded for offline, else nil.
@@ -794,11 +801,7 @@ final class SubsonicSync {
         if let files = try? fm.contentsOfDirectory(at: SubsonicCache.downloadsDir, includingPropertiesForKeys: nil) {
             for f in files { SubsonicCache.link(SubsonicCache.dir.appendingPathComponent(f.lastPathComponent)) }
         }
-        Task { @MainActor [weak self] in
-            let active = await bg.activeIDs()
-            self?.queuedIDs.formUnion(active)
-            self?.cacheVersion &+= 1
-        }
+        queuedIDs.formUnion(bg.activeIDsNow)   // known now, before any sync can re-queue
     }
 
     private func saveDownloadState() {
@@ -819,6 +822,31 @@ final class SubsonicSync {
     /// Clears the play cache only. Downloads stay.
     func clearCache() { SubsonicCache.clear(); cacheVersion &+= 1 }
 
+    // MARK: - Streaming seam (see PlayerEngine "Streaming (hybrid)")
+    /// The song's file when it's already on the phone (downloaded or cached), else nil.
+    func readyFile(for track: Track) -> URL? {
+        guard SubsonicID.isRemote(track) else { return nil }
+        let u = SubsonicCache.currentURL(for: track.url)
+        if SubsonicCache.isDownloaded(u) { SubsonicCache.link(u); return u }
+        return SubsonicCache.isCached(u) ? u : nil
+    }
+
+    /// Where to stream a server song from: the file as the server stores it, no
+    /// conversion (Navidrome serves it with byte ranges, so seeking works).
+    func streamURL(for track: Track) -> URL? {
+        guard !library.effectiveOffline, let client = store.client,
+              let sid = SubsonicID.serverID(for: track) else { return nil }
+        return client.streamURL(id: sid, format: "raw")
+    }
+
+    /// A streamed song's whole file into the cache, so its next play gets the engine.
+    /// That is a second fetch of the same song, so only on Wi-Fi (or with Sync on
+    /// Mobile Data on); on mobile data the stream alone is the cost.
+    func fillCacheIfAllowed(_ track: Track) {
+        guard !net.isCellular || useMobileData else { return }
+        Task { _ = await ensureLocal(track) }
+    }
+
     // MARK: - Playback seam + scrobble
     /// Resolve a track to a local file the engine can open — returns instantly for
     /// local files, downloads-then-returns for a remote one. nil if unreachable.
@@ -829,9 +857,24 @@ final class SubsonicSync {
         guard let client = store.client, let sid = SubsonicID.serverID(for: track) else {
             return SubsonicCache.isCached(track.url) ? track.url : nil
         }
-        if SubsonicCache.isDownloaded(track.url) { SubsonicCache.link(track.url); return track.url }
-        if SubsonicCache.isCached(track.url) { return track.url }
+        // Always the path under this launch's container, never the saved one.
+        let cacheURL = SubsonicCache.currentURL(for: track.url)
+        if SubsonicCache.isDownloaded(cacheURL) { SubsonicCache.link(cacheURL); return cacheURL }
+        if SubsonicCache.isCached(cacheURL) { return cacheURL }
         if let running = inflight[sid] { return await running.value }
+        // Wanted as a download but still queued: playing it now IS the download. Take it
+        // off the queue (it would fetch the same file again) and keep the copy below.
+        if queuedIDs.contains(sid) {
+            BackgroundDownloads.shared.cancel(ids: [sid])
+            queuedIDs.remove(sid)
+        }
+        // The song you asked for gets the whole connection while it loads.
+        playbackFetches += 1
+        if playbackFetches == 1 { BackgroundDownloads.shared.pause() }
+        defer {
+            playbackFetches -= 1
+            if playbackFetches == 0 { BackgroundDownloads.shared.resume() }
+        }
         let suffix = track.url.pathExtension.isEmpty ? "mp3" : track.url.pathExtension
         fetchingIDs.insert(sid)
         fetchProgress[sid] = 0
@@ -850,7 +893,12 @@ final class SubsonicSync {
         fetchProgress[sid] = nil
         if let url {
             addDataUsed((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
-            trimCache()
+            if pinnedIDs.contains(sid) {
+                SubsonicCache.promote(url)      // it was wanted offline anyway
+                failedIDs.remove(sid)
+            } else {
+                trimCache()
+            }
         }
         cacheVersion &+= 1
         return url
