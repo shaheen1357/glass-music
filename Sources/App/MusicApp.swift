@@ -41,6 +41,11 @@ struct MusicApp: App {
                     player.fillCache = { track in sync.fillCacheIfAllowed(track) }
                     player.streamFormatFor = { track in sync.streamFormat(track) }
                     player.isOfflineNow = { library.effectiveOffline }
+                    player.shuffleOrder = { tracks in
+                        SmartShuffle.order(tracks, stats: stats,
+                                           isLiked: { playlists.isLiked($0) },
+                                           canPlay: { sync.canPlayNow($0) })
+                    }
                     LyricsLoader.serverLyrics = { track in await sync.serverLyrics(track) }
                     await library.scan()
                     // Restore the last session (paused) once the library is loaded

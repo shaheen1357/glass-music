@@ -313,7 +313,7 @@ struct TrackRow: View {
         .alert("You're Offline", isPresented: $showOffline) {
             Button("OK", role: .cancel) {}
         } message: {
-            Text("Go online to play “\(track.title)”. Songs you download play anywhere.")
+            Text("Go online to play this track.")
         }
     }
 

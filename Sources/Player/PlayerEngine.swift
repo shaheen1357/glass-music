@@ -135,12 +135,19 @@ final class PlayerEngine {
     var streamFormatFor: ((Track) -> String?)?
     /// True when there's no way to reach the server (no connection, or Offline Mode).
     var isOfflineNow: (() -> Bool)?
+    /// Orders songs for shuffle (SmartShuffle: playable now, weighted, spread out).
+    /// nil = plain random.
+    var shuffleOrder: (([Track]) -> [Track])?
     @ObservationIgnored private var metadataReader: StreamMetadataReader?
     @ObservationIgnored private var streamPlayer: AVPlayer?
     @ObservationIgnored private var streamObservations: [NSKeyValueObservation] = []
     @ObservationIgnored private var streamTimeObserver: Any?
     @ObservationIgnored private var streamEndObserver: NSObjectProtocol?
     @ObservationIgnored private var streamCacheFilled = false
+    // Where a streamed song was when an interruption (call / alarm) hit. The progressive
+    // feed drops across an interruption, so on resume we restart the stream here instead
+    // of from the top.
+    @ObservationIgnored private var streamResumeOffset: Double?
     /// A converted stream can't jump to a byte, so a seek restarts it from a time
     /// (Navidrome's timeOffset). The stream's own clock then counts from that point.
     @ObservationIgnored private var streamBaseURL: URL?
@@ -277,6 +284,9 @@ final class PlayerEngine {
         switch type {
         case .began:
             isSuspended = true                 // Core Audio already stopped the engine
+            // A streamed song's progressive feed doesn't survive the interruption, so
+            // remember where it was and restart it there on resume.
+            if streamPlayer != nil { streamResumeOffset = currentTime }
             // The render clock is gone, so capturing currentFrame here would read
             // ~0 and rewind the song. Use the last published position instead —
             // this is the Instagram-Reel / call "restarts from the top" fix.
@@ -441,6 +451,25 @@ final class PlayerEngine {
         } else {
             play(tracks: tracks, startAt: Int.random(in: 0..<tracks.count))
         }
+    }
+
+    /// Smart Shuffle — its own button, next to plain Shuffle (which stays random).
+    /// Orders through `shuffleOrder` (SmartShuffle): only what can play now, weighted
+    /// by likes and history, spread so artists and albums don't bunch. Starts fresh
+    /// from the top of that order.
+    func playSmartShuffled(_ tracks: [Track]) {
+        guard !tracks.isEmpty else { return }
+        abortTransition()
+        let ordered = shuffleOrder?(tracks) ?? tracks.shuffled()
+        guard !ordered.isEmpty else {
+            loadError = "You're offline, and none of these songs are on the phone."
+            return
+        }
+        isShuffled = true
+        originalQueue = tracks
+        queue = ordered
+        currentIndex = 0
+        startCurrent()
     }
 
     private func startCurrent() {
@@ -750,9 +779,16 @@ final class PlayerEngine {
         abortTransition()
         if let p = streamPlayer {
             activateSession()
-            p.play()
-            isPlaying = true
-            updateNowPlayingInfo()
+            // After an interruption the progressive feed is gone; restart the stream at
+            // the point it was interrupted (same path a seek uses) rather than from zero.
+            if let off = streamResumeOffset, let track = streamTrack, let base = streamBaseURL {
+                streamResumeOffset = nil
+                startStream(track, url: base, token: startToken, offset: off, announce: false)
+            } else {
+                p.play()
+                isPlaying = true
+                updateNowPlayingInfo()
+            }
             return
         }
         if audioFile == nil {
@@ -821,6 +857,12 @@ final class PlayerEngine {
         streamTrack = track
         streamOffset = offset >= 1 ? Double(Int(offset)) : 0
         let item = AVPlayerItem(url: itemURL)
+        // Buffer the whole current song ahead when the network allows — not just a few
+        // seconds — by setting the forward-buffer target to the full track length. The
+        // player still starts on a short buffer and never stalls; it just keeps reading
+        // ahead to the end when bandwidth permits. Radio is an endless stream, so there
+        // we leave it adaptive.
+        if !track.isRadio, track.duration > 0 { item.preferredForwardBufferDuration = track.duration }
         let p = AVPlayer(playerItem: item)
         p.automaticallyWaitsToMinimizeStalling = true
         streamPlayer = p
@@ -842,6 +884,7 @@ final class PlayerEngine {
             metadataReader = reader
         }
         streamCacheFilled = false
+        streamResumeOffset = nil                  // a fresh stream start owns its own position
         isLoading = true                         // until audio actually flows
         isPlaying = false
         duration = track.duration
@@ -876,6 +919,7 @@ final class PlayerEngine {
         }
         if announce { onPlay?(track) }
         p.play()
+        prefetchUpcoming()            // fully warm the next track while this one streams
         updateNowPlayingInfo()
         savePlaybackState()
     }

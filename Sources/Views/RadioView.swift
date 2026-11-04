@@ -83,19 +83,26 @@ struct RadioView: View {
     private var yourStations: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Your Stations").font(.title2.bold()).padding(.horizontal)
-            if radio.saved.isEmpty {
-                Text("Save a station from its menu and it appears here, and in Navidrome.")
-                    .font(.subheadline).foregroundStyle(.secondary).padding(.horizontal)
-            } else {
+            if !radio.saved.isEmpty {
+                // Stations are here (from cache or the server). Don't undercut them with a
+                // red error — if the refresh failed, the shelf still works.
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(alignment: .top, spacing: 14) {
                         ForEach(radio.saved) { StationTile(station: $0) }
                     }
                     .padding(.horizontal)
                 }
-            }
-            if let err = radio.lastError {
-                Text(err).font(.footnote).foregroundStyle(.red).padding(.horizontal)
+            } else if radio.lastError != nil {
+                // Nothing to show and the server didn't answer: a calm line with a retry,
+                // not an alarm.
+                HStack(spacing: 10) {
+                    Text("Couldn't reach the server.").font(.subheadline).foregroundStyle(.secondary)
+                    Button("Retry") { Task { await radio.refresh() } }.font(.subheadline.weight(.semibold))
+                }
+                .padding(.horizontal)
+            } else {
+                Text("Save a station from its menu and it appears here, and in Navidrome.")
+                    .font(.subheadline).foregroundStyle(.secondary).padding(.horizontal)
             }
         }
     }
@@ -326,6 +333,7 @@ struct StationsScreen: View {
 private struct PlacesView: View {
     @State private var countries: [RadioBrowser.Country] = []
     @State private var filter = ""
+    @State private var loaded = false
 
     private var shown: [RadioBrowser.Country] {
         let f = filter.trimmingCharacters(in: .whitespaces)
@@ -344,11 +352,37 @@ private struct PlacesView: View {
             }
         }
         .listStyle(.plain)
-        .overlay { if countries.isEmpty { ProgressView() } }
+        .overlay {
+            if !loaded {
+                // A labelled spinner so the empty screen reads as "working", not "broken".
+                VStack(spacing: 12) {
+                    ProgressView()
+                    Text("Loading countries…").font(.subheadline).foregroundStyle(.secondary)
+                }
+            } else if countries.isEmpty {
+                // Loaded but nothing came back — a real empty state with a way out, not a
+                // spinner that spins forever.
+                ContentUnavailableView {
+                    Label("Couldn't load countries", systemImage: "wifi.exclamationmark")
+                } description: {
+                    Text("Check your connection and try again.")
+                } actions: {
+                    Button("Try Again") { Task { await load() } }
+                }
+            } else if shown.isEmpty {
+                ContentUnavailableView.search(text: filter)
+            }
+        }
         .searchable(text: $filter, prompt: "Countries")
         .navigationTitle("By Place")
         .navigationBarTitleDisplayMode(.inline)
-        .task { if countries.isEmpty { countries = (try? await RadioBrowser.countries()) ?? [] } }
+        .task { if !loaded { await load() } }
+    }
+
+    private func load() async {
+        loaded = false
+        countries = (try? await RadioBrowser.countries()) ?? []
+        loaded = true
     }
 
     private func flag(_ code: String) -> String {

@@ -457,6 +457,12 @@ struct PlaylistDetailView: View {
                 Image(systemName: "shuffle").font(.title2)
                     .foregroundStyle(displayedTracks.isEmpty ? Color.secondary : Color.accentColor)
             }
+            .contextMenu {
+                Button {
+                    stats.recordPlaylistInteraction(playlistID)
+                    player.playSmartShuffled(displayedTracks)
+                } label: { Label("Smart Shuffle", systemImage: "sparkles") }
+            }
             .disabled(displayedTracks.isEmpty)
             Button {
                 stats.recordPlaylistInteraction(playlistID)

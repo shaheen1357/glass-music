@@ -44,6 +44,20 @@ struct LibraryView: View {
                         }
                     }
                 }
+                // Shuffle everything you have: your files, downloads, cached songs and,
+                // online, the whole server. Smart Shuffle offline keeps to the phone.
+                ToolbarItem(placement: .topBarLeading) {
+                    Menu {
+                        Button { player.playShuffled(library.tracks) } label: {
+                            Label("Shuffle", systemImage: "shuffle")
+                        }
+                        Button { player.playSmartShuffled(library.tracks) } label: {
+                            Label("Smart Shuffle", systemImage: "sparkles")
+                        }
+                    } label: { Image(systemName: "shuffle") }
+                    .disabled(library.tracks.isEmpty)
+                    .accessibilityLabel("Shuffle Library")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showNewPlaylist = true } label: { Image(systemName: "plus") }
                 }
@@ -509,6 +523,11 @@ struct PlayShuffleButtons: View {
                 player.playShuffled(tracks)
             } label: {
                 Label("Shuffle", systemImage: "shuffle").frame(maxWidth: .infinity)
+            }
+            .contextMenu {
+                Button { player.playSmartShuffled(tracks) } label: {
+                    Label("Smart Shuffle", systemImage: "sparkles")
+                }
             }
         }
         .buttonStyle(.borderedProminent)
