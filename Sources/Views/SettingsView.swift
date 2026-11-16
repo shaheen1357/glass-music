@@ -94,13 +94,25 @@ struct SettingsView: View {
                         Label("Import Songs", systemImage: "square.and.arrow.down")
                     }
                     Button { Task { await library.scan(force: true) } } label: {
-                        Label("Rescan Library", systemImage: "arrow.clockwise")
+                        HStack {
+                            Label(library.isScanning ? "Rescanning…" : "Rescan Library", systemImage: "arrow.clockwise")
+                            if library.isScanning { Spacer(); ProgressView() }
+                        }
                     }
-                    Button { Task { await library.fetchMissingArtwork() } } label: {
-                        Label(library.isFetchingArtwork ? "Fetching Artwork…" : "Fetch Missing Artwork",
-                              systemImage: "photo.on.rectangle.angled")
+                    .disabled(library.isScanning)
+                    Button {
+                        Task { await library.fetchMissingArtwork(); await sync.refreshArtwork() }
+                    } label: {
+                        HStack {
+                            Label((library.isFetchingArtwork || sync.isRefreshingArtwork)
+                                  ? "Fetching Artwork…" : "Fetch Missing Artwork",
+                                  systemImage: "photo.on.rectangle.angled")
+                            if library.isFetchingArtwork || sync.isRefreshingArtwork { Spacer(); ProgressView() }
+                        }
                     }
-                    .disabled(library.isFetchingArtwork)
+                    .disabled(library.isFetchingArtwork || sync.isRefreshingArtwork)
+                } footer: {
+                    Text("Rescan re-reads the music files on your phone. Fetch Missing Artwork fills in any blank cover — for songs on your phone and for songs that stream from the server.")
                 }
 
                 Section {

@@ -179,6 +179,16 @@ final class SubsonicSync {
         if net.isCellular && !useMobileData { return }
         syncInFlight = true
         defer { syncInFlight = false }
+        // Run the actual sync in an UNSTRUCTURED Task (not a child of the caller), so the
+        // caller's cancellation can't reach it. Launched from pull-to-refresh and from
+        // scene changes, the awaiting Task was being torn down mid-request, and that
+        // cancellation ran straight into URLSession — killing every search3 at ~60ms
+        // ("context canceled", httpStatus 0). The catalog never finished loading, so no
+        // cover was ever fetched. Awaiting .value still waits for the real work to finish.
+        await Task { await self.autoSyncBody(client) }.value
+    }
+
+    private func autoSyncBody(_ client: SubsonicClient) async {
         if shouldRestore() || !repairDone || !pathCatalogDone { await fullSync(); return }
 
         // Diff the catalog when the song count moved, or when a playlist points at a
@@ -242,7 +252,9 @@ final class SubsonicSync {
         guard !syncInFlight else { return }
         syncInFlight = true
         defer { syncInFlight = false }
-        await fullSync()
+        // Run the walk in an unstructured Task so the caller's cancellation can't reach
+        // it — see autoSyncIfAllowed.
+        await Task { await self.fullSync() }.value
     }
 
     private func fullSync() async {
@@ -416,6 +428,55 @@ final class SubsonicSync {
                 art.removeAll(keepingCapacity: true)
             }
         }
+    }
+
+    // MARK: - Manual refresh (per-playlist pull-to-refresh; the Settings artwork button)
+    /// Drives the Settings artwork button so it reads as working, not dead.
+    private(set) var isRefreshingArtwork = false
+
+    /// Pull-to-refresh on one playlist. Re-pulls its songs straight from the server
+    /// (getPlaylist — not the whole-catalog search that can miss a song), folds them into
+    /// the catalog so they're real streamable tracks, refreshes the playlist's own
+    /// metadata, order and song count, and force-fetches every one of its covers, even the
+    /// ones the background backfill skipped. The lever for a playlist whose art or count
+    /// came down wrong.
+    func refreshPlaylist(_ playlistID: String) async {
+        guard let client = store.client,
+              let pl = playlists.playlists.first(where: { $0.id == playlistID }),
+              let sid = pl.serverID,
+              let (meta, songs) = try? await client.playlist(id: sid) else { return }
+        // Make sure the songs are in the catalog, so art attaches and they stream.
+        library.applyRemoteDelta(added: songs.map { client.track(from: $0) }, removedIDs: [])
+        // Refresh this playlist's entries: metadata, order, count.
+        let entries = songs.map { c -> PlaylistStore.ServerEntry in
+            let t = client.track(from: c)
+            return PlaylistStore.ServerEntry(
+                id: SubsonicID.prefix + c.id, key: t.contentKey,
+                meta: TrackMeta(title: t.title, artist: t.artist, album: t.album, duration: t.duration))
+        }
+        playlists.mergeServerPlaylists(
+            [PlaylistStore.ServerPlaylist(serverID: sid, name: meta.name ?? pl.name, entries: entries)],
+            using: library)
+        // Force every cover here, past the "already fetched" shortcut.
+        let jobs = songs.compactMap { c in c.coverArt.map { (cover: $0, ids: [SubsonicID.prefix + c.id]) } }
+        await backfillArtwork(jobs, client: client)
+    }
+
+    /// The Settings artwork button, for server songs. The local Fetch Missing Artwork only
+    /// ever touched files on the phone, so for streamed songs it did nothing — this re-pulls
+    /// the catalog and fetches a cover for every server song that still has none.
+    func refreshArtwork() async {
+        guard let client = store.client, !isRefreshingArtwork else { return }
+        isRefreshingArtwork = true
+        defer { isRefreshingArtwork = false }
+        guard let fresh = try? await fetchCatalog(client) else { return }
+        library.mergeRemote(fresh.tracks, persist: true)
+        let have = Set(library.remoteTracks.filter { $0.artworkData != nil }.map(\.id))
+        let jobs = fresh.idsByCover.compactMap { cover, ids -> (cover: String, ids: [String])? in
+            let miss = ids.filter { !have.contains($0) }
+            return miss.isEmpty ? nil : (cover, miss)
+        }
+        await backfillArtwork(jobs, client: client)
     }
 
     /// Star / unstar a track on the server (push a Like up). Local-only tracks with

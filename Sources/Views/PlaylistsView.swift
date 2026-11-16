@@ -333,6 +333,9 @@ struct PlaylistDetailView: View {
         .searchable(text: $query, prompt: "Find in Playlist")
         // A downloaded playlist follows its edits: added songs download, removed go.
         .onChange(of: playlist?.trackIDs ?? []) { _, _ in sync?.reconcileDownloads() }
+        // Pull down to re-pull this playlist from the server: its metadata, order, song
+        // count and any blank covers — the fix for a playlist that came down wrong.
+        .refreshable { await sync?.refreshPlaylist(playlistID) }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
